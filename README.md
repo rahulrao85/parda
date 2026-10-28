@@ -42,6 +42,14 @@ inside that window.
     word with forced alignment on Meta's open MMS model.
   - Writes `flags.json`, `transcript.json` and `cost.json` (every model call and its price).
 - `scripts/score_find.py`: recall against a clip's planted ground truth.
+- `python -m parda redact clip.mp4`: find, then track, then render.
+  - `parda/track.py` follows each flag with SAM 3.1 box prompts. Each request sees only the stretch of video
+    around its items, and nested boxes (a document and the number on it) go in separate requests.
+  - `parda/render.py` paints a solid, visible patch over every tracked box and bleeps every spoken secret.
+    No blur or pixelation, because pixelated text can be reconstructed.
+  - Writes `clean.mp4` and `audit.json`.
+- `scripts/make_props.py`: fake documents (SPECIMEN PAN card, bank statement, `.env`) for recording realistic test
+  clips on a real desktop.
 
 Real footage always goes to the standard Muse Spark model. The cheaper Contributor tier, where Meta may train on
 inputs, is used only for the fake test clips (`PARDA_TEST_DATA=1`).

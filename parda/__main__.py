@@ -1,11 +1,12 @@
 """Parda command line.
 
     python -m parda find clip.mp4 [-o out/clip]     # writes flags.json, transcript.json, cost.json
+    python -m parda redact clip.mp4 [-o out/clip]   # find (or reuse flags.json), track, render clean.mp4 + audit.json
 """
 import argparse, json, time
 from pathlib import Path
 
-from . import api, sample, screen, speech
+from . import api, render, sample, screen, speech, track
 
 
 def find(clip: Path, out: Path) -> dict:
@@ -24,15 +25,37 @@ def find(clip: Path, out: Path) -> dict:
     return result
 
 
+def redact(clip: Path, out: Path) -> dict:
+    flags_path = out / "flags.json"
+    result = json.loads(flags_path.read_text(encoding="utf-8")) if flags_path.exists() else find(clip, out)
+    items, info = result["items"], result["video"]
+    t = time.time()
+    tracks = track.track(clip, items, info)
+    print(f"tracked {len(tracks)} screen items over {sum(len(v) for v in tracks.values())} frames")
+    stats = render.render(clip, out / "clean.mp4", items, tracks, info)
+    audit = {"clip": clip.name, "output": "clean.mp4", "models": sorted({c["model"] for c in api.COST_LOG}),
+             "render": stats, "items": [
+                 {k: it.get(k) for k in ("id", "kind", "where", "text", "reason", "start_s", "end_s", "timing")}
+                 | {"frames_tracked": len(tracks.get(it["id"], {})), "decision": it.get("decision", "auto")}
+                 for it in items]}
+    (out / "audit.json").write_text(json.dumps(audit, indent=2, ensure_ascii=False), encoding="utf-8")
+    usd = api.write_cost(out)
+    print(f"rendered {stats['frames']} frames ({stats['frames_covered']} covered), {len(stats['bleeps'])} bleeps "
+          f"in {time.time() - t:.0f}s, ${usd:.4f} -> {out / 'clean.mp4'}")
+    return audit
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="parda")
     sub = p.add_subparsers(dest="cmd", required=True)
     f = sub.add_parser("find", help="flag private things on screen and in speech")
     f.add_argument("clip", type=Path)
     f.add_argument("-o", "--out", type=Path)
+    r = sub.add_parser("redact", help="find, track and render the clean video")
+    r.add_argument("clip", type=Path)
+    r.add_argument("-o", "--out", type=Path)
     a = p.parse_args()
-    if a.cmd == "find":
-        find(a.clip, a.out or Path("out") / a.clip.stem)
+    {"find": find, "redact": redact}[a.cmd](a.clip, a.out or Path("out") / a.clip.stem)
 
 
 if __name__ == "__main__":

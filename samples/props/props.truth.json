@@ -1,0 +1,59 @@
+{
+  "secrets": [
+    {
+      "kind": "id_number",
+      "text": "ABCDE1234F",
+      "where": "screen"
+    },
+    {
+      "kind": "id_document",
+      "text": "fake_pan_card.pdf",
+      "where": "screen"
+    },
+    {
+      "kind": "bank_detail",
+      "text": "000123456789",
+      "where": "screen"
+    },
+    {
+      "kind": "password",
+      "text": "hunter2-not-real",
+      "where": "screen"
+    },
+    {
+      "kind": "api_key",
+      "text": "AKIAIOSFODNN7EXAMPLE",
+      "where": "screen"
+    },
+    {
+      "kind": "api_key",
+      "text": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "where": "screen"
+    },
+    {
+      "kind": "api_key",
+      "text": "sk-test-FAKE0000parda0000demo0000key",
+      "where": "screen"
+    },
+    {
+      "kind": "email",
+      "text": "priya.sharma@example.com",
+      "where": "screen"
+    },
+    {
+      "kind": "phone",
+      "text": "98765 43210",
+      "where": "speech"
+    },
+    {
+      "kind": "email",
+      "text": "priya.sharma@example.com",
+      "where": "speech"
+    },
+    {
+      "kind": "password",
+      "text": "482916",
+      "where": "speech"
+    }
+  ]
+}

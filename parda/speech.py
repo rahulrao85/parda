@@ -32,6 +32,7 @@ def _wav(clip, path: Path, rate: int, start: float = 0, dur: float | None = None
 
 def transcribe(clip, duration: float, cache: Path) -> list[dict]:
     """Turns with absolute start/end seconds, transcribed in chunks that fit the API limit."""
+    cache.mkdir(parents=True, exist_ok=True)
     hit = cache / "transcript.json"
     if hit.exists():
         return json.loads(hit.read_text(encoding="utf-8"))

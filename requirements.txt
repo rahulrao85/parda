@@ -3,3 +3,5 @@ requests>=2.31
 python-dotenv>=1.0
 pillow>=10.0
 numpy>=1.26
+torch>=2.3        # word timing (MMS forced alignment); CPU build is enough
+torchaudio>=2.3
