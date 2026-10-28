@@ -34,6 +34,17 @@ inside that window.
   published example key, an `example.com` email, a spoken dummy phone number). No real personal data is used
   anywhere in this repo or its demo.
 - `scripts/probe_models.py`: one small call to each Meta model to confirm access and measure cost.
+- `python -m parda find clip.mp4`: the find step.
+  - `parda/sample.py` samples 2 frames/s and keeps a frame only if a block of the screen changed, so static
+    stretches cost nothing but a new terminal line still counts.
+  - `parda/screen.py` sends frames to Muse Spark in batches of 8 and gets flags back as JSON (kind, text, box).
+  - `parda/speech.py` runs Muse Voice Transcribe, has Muse Spark pick the secret phrases, then times them to the
+    word with forced alignment on Meta's open MMS model.
+  - Writes `flags.json`, `transcript.json` and `cost.json` (every model call and its price).
+- `scripts/score_find.py`: recall against a clip's planted ground truth.
+
+Real footage always goes to the standard Muse Spark model. The cheaper Contributor tier, where Meta may train on
+inputs, is used only for the fake test clips (`PARDA_TEST_DATA=1`).
 
 **Baseline, not included:** before the hackathon I used a regex-over-EasyOCR sweep for my own videos. That code is
 not in this repo; it is only the baseline Parda's recall is compared against.

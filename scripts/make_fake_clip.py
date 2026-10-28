@@ -5,12 +5,12 @@ have to follow it), a terminal line that appears halfway, and a voice that says 
 Every value is fake: ABCDE1234F is the sample PAN used on Indian tax forms, AKIAIOSFODNN7EXAMPLE is AWS's published
 example key, and example.com is a reserved domain.
 
-    python scripts/make_fake_clip.py samples/fake_pan_10s.mp4
+    python scripts/make_fake_clip.py samples/fake_pan_12s.mp4
 """
 import json, subprocess, sys, tempfile
 from pathlib import Path
 
-W, H, SECONDS, FPS = 1280, 720, 10, 30
+W, H, SECONDS, FPS = 1280, 720, 12, 30
 FONT = "C\\:/Windows/Fonts/consola.ttf"
 SPEECH = ("Okay, quick note before I forget. Call me on nine eight seven six five, four three two one zero, "
           "or email priya dot sharma at example dot com.")
@@ -68,4 +68,4 @@ def main(out: Path) -> None:
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1] if len(sys.argv) > 1 else "samples/fake_pan_10s.mp4"))
+    main(Path(sys.argv[1] if len(sys.argv) > 1 else "samples/fake_pan_12s.mp4"))

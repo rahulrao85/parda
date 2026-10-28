@@ -1,19 +1,19 @@
 {
-  "clip": "fake_pan_10s.mp4",
+  "clip": "fake_pan_12s.mp4",
   "secrets": [
     {
       "kind": "id_document",
       "text": "ABCDE1234F",
       "where": "screen",
       "start_s": 0.0,
-      "end_s": 10
+      "end_s": 12
     },
     {
       "kind": "api_key",
       "text": "AKIAIOSFODNN7EXAMPLE",
       "where": "screen",
       "start_s": 5.0,
-      "end_s": 10
+      "end_s": 12
     },
     {
       "kind": "phone",

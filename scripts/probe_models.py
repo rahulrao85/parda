@@ -1,6 +1,6 @@
 """One small call to each Meta model: confirms access, shows the response shape, and logs what it cost.
 
-    python scripts/probe_models.py samples/fake_pan_10s.mp4 [spark|transcribe|sam ...]
+    python scripts/probe_models.py samples/fake_pan_12s.mp4 [spark|transcribe|sam ...]
 
 Raw responses land in cache/probe_<model>.txt for reading.
 """
