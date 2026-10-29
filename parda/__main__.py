@@ -1,7 +1,7 @@
 """Parda command line.
 
     python -m parda find clip.mp4 [-o out/clip]     # writes flags.json, transcript.json, cost.json
-    python -m parda redact clip.mp4 [-o out/clip] [--verify 3] [--drop s3]
+    python -m parda redact clip.mp4 [-o out/clip] [--verify 3] [--drop s3] [--style smart]
         # find (or reuse flags.json), track, render clean.mp4, verify the output and fix leaks, audit.json
 """
 import argparse, json, time
@@ -26,7 +26,7 @@ def find(clip: Path, out: Path) -> dict:
     return result
 
 
-def redact(clip: Path, out: Path, verify_passes: int = 3, drop: tuple = ()) -> dict:
+def redact(clip: Path, out: Path, verify_passes: int = 3, drop: tuple = (), style: str = "smart") -> dict:
     """Find (or reuse flags.json), track, render, then verify the output and fix what it still shows."""
     flags_path = out / "flags.json"
     result = json.loads(flags_path.read_text(encoding="utf-8")) if flags_path.exists() else find(clip, out)
@@ -45,7 +45,7 @@ def redact(clip: Path, out: Path, verify_passes: int = 3, drop: tuple = ()) -> d
     clean, passes = out / "clean.mp4", []
     for n in range(verify_passes + 1):
         t = time.time()
-        stats = render.render(clip, clean, items, tracks, info)
+        stats = render.render(clip, clean, items, tracks, info, style)
         print(f"rendered {stats['frames']} frames ({stats['frames_covered']} covered), {len(stats['bleeps'])} bleeps "
               f"in {time.time() - t:.0f}s")
         if n == verify_passes:
@@ -86,12 +86,13 @@ def main() -> None:
     r.add_argument("-o", "--out", type=Path)
     r.add_argument("--verify", type=int, default=3, help="max verify-and-fix passes (0 = skip)")
     r.add_argument("--drop", nargs="*", default=[], help="item ids to leave out, to test that verify catches them")
+    r.add_argument("--style", choices=render.STYLES, default="smart", help="how covers look (see parda/render.py)")
     a = p.parse_args()
     out = a.out or Path("out") / a.clip.stem
     if a.cmd == "find":
         find(a.clip, out)
     else:
-        redact(a.clip, out, a.verify, tuple(a.drop))
+        redact(a.clip, out, a.verify, tuple(a.drop), a.style)
 
 
 if __name__ == "__main__":
