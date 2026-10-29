@@ -44,12 +44,13 @@ def frame_boxes(items: list[dict], tracks: dict, info: dict) -> dict[int, list[l
 
 def _cover(rgb: np.ndarray, boxes: list, pad: int) -> None:
     h, w, _ = rgb.shape
+    src = rgb.copy()  # colours come from the untouched frame, not from a patch drawn a moment ago
     for box in boxes:
         x1, y1 = max(0, box[0] - pad), max(0, box[1] - pad)
         x2, y2 = min(w, box[2] + pad), min(h, box[3] + pad)
         if x2 - x1 < 4 or y2 - y1 < 4:
             continue
-        ring = np.concatenate([rgb[y1, x1:x2], rgb[y2 - 1, x1:x2], rgb[y1:y2, x1], rgb[y1:y2, x2 - 1]])
+        ring = np.concatenate([src[y1, x1:x2], src[y2 - 1, x1:x2], src[y1:y2, x1], src[y1:y2, x2 - 1]])
         base = np.median(ring, axis=0)
         dark = base.mean() < 128
         rgb[y1:y2, x1:x2] = np.clip(base + (22 if dark else -22), 0, 255).astype(np.uint8)

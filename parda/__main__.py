@@ -30,8 +30,16 @@ def redact(clip: Path, out: Path) -> dict:
     result = json.loads(flags_path.read_text(encoding="utf-8")) if flags_path.exists() else find(clip, out)
     items, info = result["items"], result["video"]
     t = time.time()
-    tracks = track.track(clip, items, info)
-    print(f"tracked {len(tracks)} screen items over {sum(len(v) for v in tracks.values())} frames")
+    tracks_path = out / "tracks.json"
+    if tracks_path.exists() and tracks_path.stat().st_mtime > flags_path.stat().st_mtime:
+        tracks = {k: {int(f): b for f, b in v.items()} for k, v in json.loads(tracks_path.read_text()).items()}
+        print("reusing tracks.json (flags unchanged since tracking)")
+    else:
+        tracks = track.track(clip, items, info)
+        tracks_path.write_text(json.dumps(tracks))
+        print(f"tracked {len(tracks)} screen items over {sum(len(v) for v in tracks.values())} frames "
+              f"in {time.time() - t:.0f}s")
+    t = time.time()
     stats = render.render(clip, out / "clean.mp4", items, tracks, info)
     audit = {"clip": clip.name, "output": "clean.mp4", "models": sorted({c["model"] for c in api.COST_LOG}),
              "render": stats, "items": [

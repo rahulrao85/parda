@@ -5,11 +5,14 @@ side), not the whole clip. Items whose boxes nest (a document and the number on 
 because SAM drops the inner object when both are prompted together.
 """
 import base64, re, subprocess, tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import api
 
 PAD_S, MAX_OBJECTS, MAX_PROMPTS, SEG_MAX_W = 1.0, 16, 6, 1280
+TRACK_FPS = 10  # screen content barely moves in 0.1 s; each SAM frame covers the source frames around it
+WORKERS = 4
 BOX = re.compile(r"(?:^<\d+f>|,)(\d+)<\|box;x1=(-?\d+);y1=(-?\d+);x2=(-?\d+);y2=(-?\d+);w=(\d+);h=(\d+)")
 
 
@@ -31,11 +34,11 @@ def _groups(items: list[dict]) -> list[list[dict]]:
     return groups
 
 
-def _segment(clip, start: float, end: float, info: dict, out: Path) -> tuple[int, int]:
+def _segment(clip, start: float, end: float, info: dict, out: Path, fps: float) -> tuple[int, int]:
     scale = min(1.0, SEG_MAX_W / info["w"])
     w, h = int(info["w"] * scale) // 2 * 2, int(info["h"] * scale) // 2 * 2
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-ss", f"{start:.3f}", "-i", str(clip), "-t",
-                    f"{end - start:.3f}", "-an", "-vf", f"scale={w}:{h}", "-r", f"{info['fps']}", "-c:v", "libx264",
+                    f"{end - start:.3f}", "-an", "-vf", f"scale={w}:{h}", "-r", f"{fps}", "-c:v", "libx264",
                     "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", str(out)], check=True)
     return w, h
 
@@ -60,37 +63,49 @@ def _sam(video: Path, prompt: str) -> str:
     return "".join(out)
 
 
+def _track_group(clip, group: list[dict], info: dict) -> dict[str, dict[int, list[int]]]:
+    fps = info["fps"]
+    seg_fps = min(fps, TRACK_FPS)
+    start = max(0.0, min(i["start_s"] for i in group) - PAD_S)
+    end = min(info["duration"], max(i["end_s"] for i in group) + PAD_S + 1 / info.get("rate", 2))
+    with tempfile.TemporaryDirectory() as tmp:
+        seg = Path(tmp) / "seg.mp4"
+        w, h = _segment(clip, start, end, info, seg, seg_fps)
+        sx, sy = w / info["w"], h / info["h"]
+        prompts: dict[int, list[str]] = {}
+        for oid, it in enumerate(group, start=1):
+            last, n = -1e9, 0
+            for s in it["seen"]:  # re-prompt every 1.5 s so a scroll or jump does not lose the object
+                if s["t"] - last < 1.5 or n >= MAX_PROMPTS:
+                    continue
+                last, n = s["t"], n + 1
+                x1, y1, x2, y2 = s["box"]
+                f = max(0, round((s["t"] - start) * seg_fps))
+                prompts.setdefault(f, []).append(
+                    f"{oid}<|box;x1={round(x1 * sx)};y1={round(y1 * sy)};x2={round(x2 * sx)};y2={round(y2 * sy)};w={w};h={h}|>")
+        prompt = "".join(f"<{f}f>" + ",".join(p) for f, p in sorted(prompts.items()))
+        raw = _sam(seg, prompt)
+    tracks: dict[str, dict[int, list[int]]] = {}
+    half = 0.5 / seg_fps
+    for line in raw.splitlines():
+        fm = re.match(r"<(\d+)f>", line)
+        if not fm:
+            continue
+        t = start + int(fm.group(1)) / seg_fps  # this SAM frame stands for the source frames within half a step
+        for oid, x1, y1, x2, y2, _, _ in BOX.findall(line):
+            k = int(oid) - 1
+            if 0 <= k < len(group):
+                box = [round(int(x1) / sx), round(int(y1) / sy), round(int(x2) / sx), round(int(y2) / sy)]
+                for n in range(round((t - half) * fps), round((t + half) * fps) + 1):
+                    tracks.setdefault(group[k]["id"], {})[max(0, n)] = box
+    return tracks
+
+
 def track(clip, items: list[dict], info: dict) -> dict[str, dict[int, list[int]]]:
     """For each screen item id: {source frame number: [x1, y1, x2, y2] in source pixels}."""
-    fps, tracks = info["fps"], {}
-    for group in _groups([i for i in items if i["where"] == "screen" and i.get("seen")]):
-        start = max(0.0, min(i["start_s"] for i in group) - PAD_S)
-        end = min(info["duration"], max(i["end_s"] for i in group) + PAD_S + 1 / info.get("rate", 2))
-        with tempfile.TemporaryDirectory() as tmp:
-            seg = Path(tmp) / "seg.mp4"
-            w, h = _segment(clip, start, end, info, seg)
-            sx, sy = w / info["w"], h / info["h"]
-            prompts: dict[int, list[str]] = {}
-            for oid, it in enumerate(group, start=1):
-                last, n = -1e9, 0
-                for s in it["seen"]:  # re-prompt every 1.5 s so a scroll or jump does not lose the object
-                    if s["t"] - last < 1.5 or n >= MAX_PROMPTS:
-                        continue
-                    last, n = s["t"], n + 1
-                    x1, y1, x2, y2 = s["box"]
-                    f = max(0, round((s["t"] - start) * fps))
-                    prompts.setdefault(f, []).append(
-                        f"{oid}<|box;x1={round(x1 * sx)};y1={round(y1 * sy)};x2={round(x2 * sx)};y2={round(y2 * sy)};w={w};h={h}|>")
-            prompt = "".join(f"<{f}f>" + ",".join(p) for f, p in sorted(prompts.items()))
-            raw = _sam(seg, prompt)
-        offset = round(start * fps)
-        for line in raw.splitlines():
-            fm = re.match(r"<(\d+)f>", line)
-            if not fm:
-                continue
-            for oid, x1, y1, x2, y2, _, _ in BOX.findall(line):
-                k = int(oid) - 1
-                if 0 <= k < len(group):
-                    box = [round(int(x1) / sx), round(int(y1) / sy), round(int(x2) / sx), round(int(y2) / sy)]
-                    tracks.setdefault(group[k]["id"], {})[int(fm.group(1)) + offset] = box
+    groups = _groups([i for i in items if i["where"] == "screen" and i.get("seen")])
+    tracks: dict[str, dict[int, list[int]]] = {}
+    with ThreadPoolExecutor(WORKERS) as pool:
+        for part in pool.map(lambda g: _track_group(clip, g, info), groups):
+            tracks.update(part)
     return tracks
