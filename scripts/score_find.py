@@ -28,6 +28,9 @@ def main(truth_path: str, flags_path: str) -> None:
         cands = [it for it in items if it["where"] == sec["where"]]
         conv = spoken if sec["where"] == "speech" else norm
         # fuzzy, because speech-to-text mishears names ("sharma" -> "charma") and drops ".com"
+        if sec["kind"] == "id_document":  # documents are flagged by description, not by exact text
+            cands = [it for it in cands if it["kind"] == "id_document"] or cands
+            target = norm(cands[0]["text"]) if cands and cands[0]["kind"] == "id_document" else target
         hit = next((it for it in cands if target in conv(it["text"]) or
                     SequenceMatcher(None, target, conv(it["text"])).ratio() >= 0.75), None)
         found += bool(hit)

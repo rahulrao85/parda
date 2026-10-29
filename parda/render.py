@@ -8,11 +8,21 @@ import subprocess
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-EDGE = (37, 99, 235)
-try:
-    FONT = ImageFont.truetype("arial.ttf", 16)
-except OSError:
-    FONT = ImageFont.load_default()
+EDGE = np.array([37, 99, 235], np.uint8)
+
+
+def _label() -> np.ndarray:
+    """'hidden by Parda' as a 0..1 alpha mask, rendered once and stamped into every patch big enough to hold it."""
+    try:
+        font = ImageFont.truetype("arial.ttf", 16)
+    except OSError:
+        font = ImageFont.load_default()
+    img = Image.new("L", (124, 20), 0)
+    ImageDraw.Draw(img).text((0, 1), "hidden by Parda", font=font, fill=255)
+    return np.asarray(img, np.float32)[..., None] / 255
+
+
+LABEL = _label()
 
 
 def frame_boxes(items: list[dict], tracks: dict, info: dict) -> dict[int, list[list[int]]]:
@@ -32,23 +42,25 @@ def frame_boxes(items: list[dict], tracks: dict, info: dict) -> dict[int, list[l
     return out
 
 
-def _cover(rgb: np.ndarray, boxes: list, pad: int) -> np.ndarray:
+def _cover(rgb: np.ndarray, boxes: list, pad: int) -> None:
     h, w, _ = rgb.shape
-    img = Image.fromarray(rgb)
-    d = ImageDraw.Draw(img)
     for box in boxes:
         x1, y1 = max(0, box[0] - pad), max(0, box[1] - pad)
         x2, y2 = min(w, box[2] + pad), min(h, box[3] + pad)
-        if x2 - x1 < 2 or y2 - y1 < 2:
+        if x2 - x1 < 4 or y2 - y1 < 4:
             continue
         ring = np.concatenate([rgb[y1, x1:x2], rgb[y2 - 1, x1:x2], rgb[y1:y2, x1], rgb[y1:y2, x2 - 1]])
         base = np.median(ring, axis=0)
-        fill = tuple(int(v) for v in np.clip(base + (22 if base.mean() < 128 else -22), 0, 255))
-        d.rectangle([x1, y1, x2 - 1, y2 - 1], fill=fill, outline=EDGE, width=2)
-        if x2 - x1 >= 130 and y2 - y1 >= 22:
-            ink = (226, 232, 240) if base.mean() < 128 else (51, 65, 85)
-            d.text((x1 + 8, (y1 + y2) / 2), "hidden by Parda", font=FONT, fill=ink, anchor="lm")
-    return np.asarray(img)
+        dark = base.mean() < 128
+        rgb[y1:y2, x1:x2] = np.clip(base + (22 if dark else -22), 0, 255).astype(np.uint8)
+        rgb[y1:y1 + 2, x1:x2] = rgb[y2 - 2:y2, x1:x2] = EDGE
+        rgb[y1:y2, x1:x1 + 2] = rgb[y1:y2, x2 - 2:x2] = EDGE
+        lh, lw, _ = LABEL.shape
+        if x2 - x1 >= lw + 16 and y2 - y1 >= lh + 4:
+            ly, lx = (y1 + y2 - lh) // 2, x1 + 8
+            ink = np.array([226, 232, 240] if dark else [51, 65, 85], np.float32)
+            region = rgb[ly:ly + lh, lx:lx + lw].astype(np.float32)
+            rgb[ly:ly + lh, lx:lx + lw] = (region * (1 - LABEL) + ink * LABEL).astype(np.uint8)
 
 
 def _bleep_filter(spans: list[tuple[float, float]]) -> str:
@@ -72,7 +84,7 @@ def render(clip, out, items: list[dict], tracks: dict, info: dict) -> dict:
         cmd += ["-filter_complex", _bleep_filter(spans), "-map", "0:v", "-map", "[a]"]
     elif has_audio:
         cmd += ["-map", "0:v", "-map", "1:a"]
-    cmd += ["-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(out)]
+    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(out)]
     enc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     dec = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-i", str(clip), "-f", "rawvideo", "-pix_fmt", "rgb24",
                             "-"], stdout=subprocess.PIPE)
@@ -80,7 +92,8 @@ def render(clip, out, items: list[dict], tracks: dict, info: dict) -> dict:
     while (chunk := dec.stdout.read(size)) and len(chunk) == size:
         rgb = np.frombuffer(chunk, np.uint8).reshape(H, W, 3)
         if boxes.get(n):
-            rgb = _cover(rgb, boxes[n], pad)
+            rgb = rgb.copy()
+            _cover(rgb, boxes[n], pad)
         covered += bool(boxes.get(n))
         enc.stdin.write(rgb.tobytes())
         n += 1

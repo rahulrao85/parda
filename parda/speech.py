@@ -13,10 +13,20 @@ from . import api
 
 CHUNK_S = 570  # Voice Transcribe takes up to 10 minutes per request
 DIGITS = dict(zip("0123456789", "zero one two three four five six seven eight nine".split()))
-DIGIT_WORDS = set(DIGITS.values())
+# Number words as Hindi transcripts write them: English words in Devanagari, and Hindi numerals (romanised as said).
+HI_NUM = {"नाइन": "nine", "एट": "eight", "सेवन": "seven", "सिक्स": "six", "फाइव": "five", "फोर": "four",
+          "थ्री": "three", "टू": "two", "वन": "one", "जीरो": "zero", "जेरो": "zero", "शून्य": "shunya", "एक": "ek",
+          "दो": "do", "तीन": "teen", "चार": "char", "पांच": "paanch", "पाँच": "paanch", "छह": "chhah", "सात": "saat",
+          "आठ": "aath", "नौ": "nau"}
+DIGIT_WORDS = set(DIGITS.values()) | set(HI_NUM.values())
+DEV_CONS = dict(zip("कखगघङचछजझञटठडढणतथदधनपफबभमयरलवशषसह",
+                    "k kh g gh n ch chh j jh n t th d dh n t th d dh n p ph b bh m y r l v sh sh s h".split()))
+DEV_SIGNS = dict(zip("ािीुूृेैोौ", "a i ee u oo ri e ai o au".split()))
+DEV_VOWELS = dict(zip("अआइईउऊऋएऐओऔंँः", "a aa i ee u oo ri e ai o au n n h".split()))
 PROMPT = """This is the transcript of a video's audio, split into numbered turns. Find every phrase a stranger
 must not hear: phone numbers, emails, government ID numbers, passwords, PINs or OTPs, card or bank numbers, home
-addresses, API keys. Numbers are often spoken digit by digit. Do not flag ordinary words.
+addresses, API keys. Numbers are often spoken digit by digit, and a Hindi or Hinglish transcript may write
+them in Devanagari ("नाइन एट सेवन" or "एक दो तीन"). Do not flag ordinary words.
 Reply with JSON only: {"spans": [{"turn": <turn number>, "quote": "<exact words copied from that turn, the full
 secret and nothing else>", "kind": "phone|email|id_number|password|payment_card|bank_detail|address|api_key|other",
 "reason": "<few words>"}]}
@@ -56,11 +66,38 @@ def transcribe(clip, duration: float, cache: Path) -> list[dict]:
     return turns
 
 
+def _roman(word: str) -> str:
+    """Rough Devanagari -> Latin, enough for the aligner to hear Hinglish ("नंबर" -> "nambar")."""
+    out, i = [], 0
+    while i < len(word):
+        ch = word[i]
+        if ch in DEV_CONS:
+            out.append(DEV_CONS[ch])
+            nxt = word[i + 1] if i + 1 < len(word) else ""
+            if nxt == "़":  # nukta: same sound for our purpose
+                i, nxt = i + 1, word[i + 2] if i + 2 < len(word) else ""
+            if nxt in DEV_SIGNS:
+                out.append(DEV_SIGNS[nxt]); i += 1
+            elif nxt == "्":  # virama: no vowel
+                i += 1
+            elif i + 1 < len(word):
+                out.append("a")  # inherent vowel, dropped at the end of a word as Hindi does
+        else:
+            out.append(DEV_VOWELS.get(ch, ""))
+        i += 1
+    return "".join(out)
+
+
 def _words(text: str) -> list[str]:
-    """Alignment words: lowercase letters only, digits spelled out one by one (that is how they are spoken)."""
+    """Alignment words: lowercase Latin letters only, digits spelled out one by one (that is how they are spoken),
+    Devanagari romanised. Hinglish transcripts often write English number words in Devanagari ("नाइन एट")."""
     out = []
-    for m in re.finditer(r"[A-Za-z']+|\d", text):
-        w = DIGITS.get(m.group(), m.group().lower().replace("'", ""))
+    for m in re.finditer(r"[A-Za-z']+|\d|[ऀ-ॿ]+", text):
+        g = m.group()
+        if g[0] >= "ऀ":
+            w = HI_NUM.get(g.replace("़", "")) or _roman(g)
+        else:
+            w = DIGITS.get(g, g.lower().replace("'", ""))
         if w:
             out.append(w)
     return out

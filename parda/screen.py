@@ -1,5 +1,6 @@
 """Find private things on screen: send batches of sampled frames to Muse Spark, get flags back as JSON."""
 import base64, hashlib, io, json, re
+from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -54,21 +55,36 @@ def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9@.]", "", text.lower())
 
 
+def _iou(a, b) -> float:
+    ix = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - ix
+    return ix / union if union > 0 else 0.0
+
+
+def _same(a: dict, b: dict, words_a: set, words_b: set) -> bool:
+    """Same secret? Spark words a document differently per batch ("PAN card" vs "Sample PAN ID card") and misreads
+    long keys by a character, so: one wording contains the other, near-identical wording, or the same box at the
+    same moment."""
+    if a["kind"] != b["kind"]:
+        return False
+    for x in words_a:
+        for y in words_b:
+            if min(len(x), len(y)) >= 6 and (x in y or y in x or SequenceMatcher(None, x, y).ratio() >= 0.9):
+                return True
+    return any(abs(p["t"] - q["t"]) <= 1.0 and _iou(p["box"], q["box"]) >= 0.5 for p in a["seen"] for q in b["seen"])
+
+
 def _merge(items: list[dict]) -> list[dict]:
-    """Spark words the same document differently from batch to batch ("PAN_card_scan.pdf" vs "PAN_card_scan.pdf ID
-    scan document"). Same kind and one text containing the other means the same secret."""
     out: list[tuple[set, dict]] = []  # (every wording seen for this secret, item)
     for it in items:
-        a = _norm(it["text"])
-        match = next((o for o in out if o[1]["kind"] == it["kind"] and len(a) >= 6
-                      and any(len(b) >= 6 and (a in b or b in a) for b in o[0])), None)
+        words = {_norm(it["text"])}
+        match = next((o for o in out if _same(o[1], it, o[0], words)), None)
         if match:
-            match[0].add(a)
+            match[0].update(words)
             match[1]["seen"] = sorted(match[1]["seen"] + it["seen"], key=lambda s: s["t"])
         else:
-            out.append(({a}, it))
-    out = [it for _, it in out]
-    return out
+            out.append((words, it))
+    return [it for _, it in out]
 
 
 def find(frames: list[Frame], info: dict, cache: Path, batch: int = 8, workers: int = 4) -> list[dict]:
