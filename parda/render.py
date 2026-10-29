@@ -26,19 +26,19 @@ LABEL = _label()
 
 
 def frame_boxes(items: list[dict], tracks: dict, info: dict) -> dict[int, list[list[int]]]:
-    """Every box to cover, by source frame. SAM's track first; Spark's own sightings fill any frame SAM missed."""
+    """Every box to cover, by source frame: SAM's track AND Spark's own sightings. During a zoom, scroll or window
+    jump SAM can sit on the wrong line for a moment, so a sighting is always covered too; a few extra pixels of
+    patch cost nothing, a leak costs everything."""
     fps, hold = info["fps"], 0.5 / info.get("rate", 2)
     out: dict[int, list] = {}
     for it in items:
         if it["where"] != "screen" or it.get("decision") == "rejected":
             continue
-        tr = tracks.get(it["id"], {})
-        for n, box in tr.items():
+        for n, box in tracks.get(it["id"], {}).items():
             out.setdefault(n, []).append(box)
         for s in it.get("seen", []):
-            for n in range(round((s["t"] - hold) * fps), round((s["t"] + hold) * fps) + 1):
-                if n >= 0 and n not in tr:
-                    out.setdefault(n, []).append(s["box"])
+            for n in range(max(0, round((s["t"] - hold) * fps)), round((s["t"] + hold) * fps) + 1):
+                out.setdefault(n, []).append(s["box"])
     return out
 
 

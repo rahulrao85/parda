@@ -131,6 +131,28 @@ class Aligner:
         return [(turn["start_s"] + s[0].start * sec, turn["start_s"] + s[-1].end * sec) for s in spans]
 
 
+_DOT = r"\s*(?:\.|\bdot\b)\s*"
+EMAIL = re.compile(rf"\w+(?:{_DOT}\w+)*\s*(?:@|\bat\b)\s*[\w-]+(?:{_DOT}[\w-]+)*{_DOT}(?:com|in|org|net|co|io|ai)\b", re.I)
+
+
+def _rules(turns: list[dict]) -> list[tuple]:
+    """Deterministic backstop: an email pattern or a run of 5+ spoken digits is always a secret, whatever Spark says.
+    A privacy check cannot rest on one model call, which does not answer the same way every time."""
+    out = []
+    for i, t in enumerate(turns):
+        for m in EMAIL.finditer(t["text"]):
+            out.append((i, _words(m.group()), "email", "email pattern (rule)"))
+        words, k = _words(t["text"]), 0
+        while k < len(words):
+            n = 0
+            while k + n < len(words) and words[k + n] in DIGIT_WORDS:
+                n += 1
+            if n >= 5:
+                out.append((i, words[k:k + n], "number", f"{n} spoken digits (rule)"))
+            k += max(n, 1)
+    return out
+
+
 def find(clip, info: dict, cache: Path) -> tuple[list[dict], list[dict]]:
     """Spoken secrets as items with start/end seconds, plus the transcript turns."""
     cache.mkdir(parents=True, exist_ok=True)
@@ -139,15 +161,15 @@ def find(clip, info: dict, cache: Path) -> tuple[list[dict], list[dict]]:
         return [], turns
     listing = "\n".join(f"{i}: {t['text']}" for i, t in enumerate(turns))
     reply = api.spark_json([{"type": "text", "text": PROMPT + listing}])
-    aligner, items = None, []
-    for sp in reply.get("spans", []):
-        i = sp.get("turn")
+    found = [(sp.get("turn"), _words(sp.get("quote", "")), sp.get("kind", "other"), sp.get("reason", ""))
+             for sp in reply.get("spans", [])]
+    found += _rules(turns)
+    aligner, items, taken = None, [], set()
+    for i, quote, kind, reason in found:
         if not (isinstance(i, int) and 0 <= i < len(turns)):
             continue
-        turn, quote = turns[i], _words(sp.get("quote", ""))
+        turn, all_words = turns[i], _words(turns[i]["text"])
         start, end, timing = turn["start_s"], turn["end_s"], "turn"
-        aligner = aligner or Aligner()
-        all_words = _words(turn["text"])
         at = next((k for k in range(len(all_words) - len(quote) + 1)
                    if quote and all_words[k:k + len(quote)] == quote), None)
         if at is not None:  # Spark sometimes stops a digit-by-digit number early; take the whole run of digits
@@ -157,11 +179,15 @@ def find(clip, info: dict, cache: Path) -> tuple[list[dict], list[dict]]:
             while at > 0 and all_words[at - 1] in DIGIT_WORDS and all_words[at] in DIGIT_WORDS:
                 at, n = at - 1, n + 1
             quote = all_words[at:at + n]
+            span = {(i, k) for k in range(at, at + n)}
+            if span & taken:  # Spark and a rule found the same words
+                continue
+            taken |= span
+        aligner = aligner or Aligner()
         times = aligner.words(clip, turn, all_words) if at is not None else None
         if times:
             start, end, timing = times[at][0] - 0.15, times[at + len(quote) - 1][1] + 0.15, "word"
-        text = " ".join(quote) if at is not None else sp.get("quote", "")
-        items.append({"id": f"a{len(items) + 1}", "kind": sp.get("kind", "other"), "text": text,
-                      "reason": sp.get("reason", ""), "where": "speech", "start_s": round(max(0, start), 2),
-                      "end_s": round(end, 2), "timing": timing})
+        items.append({"id": f"a{len(items) + 1}", "kind": kind, "text": " ".join(quote), "reason": reason,
+                      "where": "speech", "start_s": round(max(0, start), 2), "end_s": round(end, 2),
+                      "timing": timing})
     return items, turns

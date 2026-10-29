@@ -47,7 +47,15 @@ inside that window.
     around its items, and nested boxes (a document and the number on it) go in separate requests.
   - `parda/render.py` paints a solid, visible patch over every tracked box and bleeps every spoken secret.
     No blur or pixelation, because pixelated text can be reconstructed.
-  - Writes `clean.mp4` and `audit.json`.
+  - `parda/verify.py` then scans the **rendered output** the way a viewer would: fresh Muse Spark passes over
+    its frames and a fresh Voice Transcribe of its audio. Anything still visible or audible becomes a new item,
+    gets tracked on the source and re-rendered, and the output is checked again (up to 3 passes).
+  - Writes `clean.mp4` and `audit.json`: every item, which pass found it, each verify pass, the verdict
+    (`clean` / `needs review`) and the SHA-256 of the clean file.
+  - `--drop s3 a2` leaves chosen flags out on purpose, to show the verify loop catching what the first pass
+    missed.
+- Spoken secrets: Muse Spark picks them from the transcript, and deterministic rules (email patterns, runs of 5+
+  spoken digits, Hindi number words included) back it up, because one model call is not the same every time.
 - `scripts/make_props.py`: fake documents (SPECIMEN PAN card, bank statement, `.env`) for recording realistic test
   clips on a real desktop.
 
