@@ -2,7 +2,8 @@
 
 Covers are painted only from the pixels AROUND a secret, never from the secret itself, so nothing can be recovered
 from them (blur and pixelation can be partly reversed). Styles:
-  smart  text becomes password dots, one row per line; ID documents become a card with a lock (default)
+  mask   only the value is replaced by ****** with a small "hidden by Parda"; the document stays readable (default)
+  smart  text becomes password dots, one row per line; ID documents become a card with a lock
   erase  the secret is painted out in the surrounding colour, as if it was never there
   pill   a rounded "private" chip with a lock
   box    a flat patch with a blue edge and "hidden by Parda"
@@ -13,7 +14,7 @@ from functools import lru_cache
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-STYLES = ("smart", "erase", "pill", "box")
+STYLES = ("mask", "smart", "erase", "pill", "box")
 EDGE = np.array([37, 99, 235], np.uint8)
 DOC_MIN_H = 70  # taller than a line of text: treat as a document or panel, not a single value
 
@@ -40,6 +41,43 @@ def _stamp(text: str, size: int, lock: bool = True) -> np.ndarray:
         d.rounded_rectangle([bx, by, bx + bw, by + bh], radius=max(2, size // 6), fill=255)
     d.text((lw + (size // 3 if lock else 0), img.height / 2), text, font=font, fill=255, anchor="lm")
     return np.asarray(img, np.float32)[..., None] / 255
+
+
+@lru_cache(maxsize=64)
+def _ink(text: str, size: int, mono: bool = False) -> np.ndarray:
+    """Text as a 0..1 alpha mask cropped tight to its ink, so asterisks (which sit high in most fonts) centre."""
+    try:
+        font = ImageFont.truetype("consolab.ttf" if mono else "arial.ttf", size)
+    except OSError:
+        font = ImageFont.load_default()
+    img = Image.new("L", (size * (len(text) + 2), size * 2), 0)
+    ImageDraw.Draw(img).text((size // 2, size // 2), text, font=font, fill=255)
+    box = img.getbbox() or (0, 0, 1, 1)
+    return np.asarray(img.crop(box), np.float32)[..., None] / 255
+
+
+def _mask_cover(rgb, x1, y1, x2, y2, base, dark) -> None:
+    """****** where the value was, then 'hidden by Parda' in the space left over, both centred on the line."""
+    bw, bh = x2 - x1, y2 - y1
+    tint = np.array([37, 99, 235], np.float32)
+    rgb[y1:y2, x1:x2] = (base * 0.9 + tint * 0.1).astype(np.uint8)  # a faint blue wash marks the field
+    size = int(np.clip(bh * 0.75, 10, 44))
+    stars_ink = (226, 232, 240) if dark else (51, 65, 85)
+    label = _ink("hidden by Parda", int(np.clip(size * 0.45, 9, 16)))
+    n = int(np.clip(round(bw * 0.5 / (size * 0.55)), 3, 14))
+    while n >= 3:
+        stars = _ink("*" * n, size, mono=True)
+        room = bw - 12 - stars.shape[1]
+        if room >= 0:
+            break
+        n -= 1
+    else:
+        return
+    x = x1 + 6
+    _blend(rgb, y1 + (bh - stars.shape[0]) // 2, x, stars, stars_ink)
+    if room >= label.shape[1] + 10 and bh >= label.shape[0] + 2:
+        _blend(rgb, y1 + (bh - label.shape[0]) // 2, x + stars.shape[1] + 10, label,
+               (147, 197, 253) if dark else (37, 99, 235))
 
 
 @lru_cache(maxsize=64)
@@ -105,7 +143,7 @@ def _merge_boxes(boxes: list) -> list:
     return out
 
 
-def _cover(rgb: np.ndarray, boxes: list, pad: int, style: str = "smart") -> None:
+def _cover(rgb: np.ndarray, boxes: list, pad: int, style: str = "mask") -> None:
     h, w, _ = rgb.shape
     src = rgb.copy()  # colours come from the untouched frame, not from a cover drawn a moment ago
     for box in _merge_boxes(boxes):
@@ -120,6 +158,9 @@ def _cover(rgb: np.ndarray, boxes: list, pad: int, style: str = "smart") -> None
         ink = (203, 213, 225) if dark else (71, 85, 105)
         rgb[y1:y2, x1:x2] = base.astype(np.uint8)  # every style starts by painting the secret out
         if style == "erase":
+            continue
+        if style == "mask":
+            _mask_cover(rgb, x1, y1, x2, y2, base, dark)
             continue
         if style == "box":
             rgb[y1:y2, x1:x2] = np.clip(base + (22 if dark else -22), 0, 255).astype(np.uint8)
@@ -165,7 +206,7 @@ def _bleep_filter(spans: list[tuple[float, float]]) -> str:
             "[m][s]amix=inputs=2:duration=first:normalize=0[a]")
 
 
-def render(clip, out, items: list[dict], tracks: dict, info: dict, style: str = "smart") -> dict:
+def render(clip, out, items: list[dict], tracks: dict, info: dict, style: str = "mask") -> dict:
     W, H, fps = info["w"], info["h"], info["fps"]
     boxes = frame_boxes(items, tracks, info)
     spans = [(it["start_s"], it["end_s"]) for it in items

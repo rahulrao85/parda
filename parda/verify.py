@@ -9,7 +9,7 @@ from pathlib import Path
 from . import sample, screen, speech
 
 # Backstop for the verify prompt: a finding that describes a cover ("redacted value", "dots") is not a leak.
-COVER_WORDS = re.compile(r"redact|masked|\bdots?\b|●|hidden|private document|\bcover", re.I)
+COVER_WORDS = re.compile(r"redact|masked|asterisk|\*{3,}|\bdots?\b|●|hidden|private document|\bcover", re.I)
 
 
 def scan(clean: Path, work: Path) -> list[dict]:

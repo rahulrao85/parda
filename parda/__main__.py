@@ -1,7 +1,7 @@
 """Parda command line.
 
     python -m parda find clip.mp4 [-o out/clip]     # writes flags.json, transcript.json, cost.json
-    python -m parda redact clip.mp4 [-o out/clip] [--verify 3] [--drop s3] [--style smart]
+    python -m parda redact clip.mp4 [-o out/clip] [--verify 3] [--drop s3] [--style mask]
         # find (or reuse flags.json), track, render clean.mp4, verify the output and fix leaks, audit.json
 """
 import argparse, json, time
@@ -26,7 +26,7 @@ def find(clip: Path, out: Path) -> dict:
     return result
 
 
-def redact(clip: Path, out: Path, verify_passes: int = 3, drop: tuple = (), style: str = "smart") -> dict:
+def redact(clip: Path, out: Path, verify_passes: int = 3, drop: tuple = (), style: str = "mask") -> dict:
     """Find (or reuse flags.json), track, render, then verify the output and fix what it still shows."""
     flags_path = out / "flags.json"
     result = json.loads(flags_path.read_text(encoding="utf-8")) if flags_path.exists() else find(clip, out)
@@ -86,7 +86,7 @@ def main() -> None:
     r.add_argument("-o", "--out", type=Path)
     r.add_argument("--verify", type=int, default=3, help="max verify-and-fix passes (0 = skip)")
     r.add_argument("--drop", nargs="*", default=[], help="item ids to leave out, to test that verify catches them")
-    r.add_argument("--style", choices=render.STYLES, default="smart", help="how covers look (see parda/render.py)")
+    r.add_argument("--style", choices=render.STYLES, default="mask", help="how covers look (see parda/render.py)")
     a = p.parse_args()
     out = a.out or Path("out") / a.clip.stem
     if a.cmd == "find":

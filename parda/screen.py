@@ -9,17 +9,20 @@ from PIL import Image
 from . import api
 from .sample import Frame
 
-PROMPT_VERSION = "screen-v3"
-KINDS = ["id_number", "id_document", "api_key", "password", "email", "phone", "address", "bank_detail",
-         "payment_card", "person_name", "financial_amount", "private_message", "other"]
+PROMPT_VERSION = "screen-v4"
+KINDS = ["id_number", "person_name", "date_of_birth", "photo_of_person", "api_key", "password", "email", "phone",
+         "address", "bank_detail", "payment_card", "financial_amount", "private_message", "other"]
 PROMPT = f"""You check frames of a screen recording before it is published. For EACH frame, list every item a
 viewer must not see: government ID numbers and ID documents, API keys, tokens, passwords, emails, phone numbers,
 home addresses, bank or card details, private messages, a person's name shown next to their ID, account, contact
 or document details, and money amounts on bank statements, payslips or invoices. Flag anything that LOOKS like one of these even if it might
 be a sample, placeholder or test value: a person reviews every flag, so a missed secret is far worse than an extra
 flag. Do not flag ordinary UI text or menu labels.
-Boxes are [x1, y1, x2, y2] on a 0-1000 scale of that frame's width and height, tight around the private text or
-document itself.
+Never flag a whole document, window or page. The viewer should still see WHAT the document is (a PAN card, a bank
+statement, a .env file); flag each private VALUE inside it separately: the name, the ID number, the date of birth,
+the photo, the account number, each key or password value. Labels such as "Name:" or "AWS_SECRET_ACCESS_KEY=" and
+document titles stay visible.
+Boxes are [x1, y1, x2, y2] on a 0-1000 scale of that frame's width and height, tight around the private value only.
 Reply with JSON only:
 {{"frames": [{{"i": <frame number>, "flags": [{{"kind": one of {KINDS}, "text": "<exact text as shown, or a short
 description for a document>", "box": [x1, y1, x2, y2], "reason": "<few words>"}}]}}]}}
@@ -27,9 +30,10 @@ Include every frame number, with an empty flags list when nothing is private."""
 # Verify passes look at Parda's own output, where covers are already drawn. Without this, Spark reads a row of dots
 # as "a redacted secret" and every pass covers more of the screen.
 VERIFY_NOTE = """
-These frames were already redacted. Rows of dots (●●●●), "Private document" cards with a lock, flat patches and
-"private" chips are covers that already hide something: never flag a cover. Flag only private text or documents
-that are still READABLE, even partly (a few visible characters of a key or number count)."""
+These frames were already redacted. Asterisks (****) with "hidden by Parda", rows of dots, lock cards, flat
+patches and "private" chips are covers that already hide something: never flag a cover. Documents, labels and titles
+are meant to stay visible. Flag only private VALUES that are still READABLE, even partly (a few visible characters
+of a key, number or name count)."""
 
 
 def _jpeg(frame: Frame) -> bytes:
