@@ -52,7 +52,13 @@ def _batch(frames: list[Frame], cache: Path, prompt: str = PROMPT) -> dict[float
     for n, (f, jp) in enumerate(zip(frames, jpegs)):
         content += [{"type": "text", "text": f"Frame {n} (t={f.t:.1f}s):"},
                     {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jp).decode()}}]
-    reply = api.spark_json(content)
+    try:
+        reply = api.spark_json(content)
+    except ValueError:
+        if len(frames) == 1:
+            raise
+        half = len(frames) // 2  # a smaller batch means a shorter reply, which parses more reliably
+        return {**_batch(frames[:half], cache, prompt), **_batch(frames[half:], cache, prompt)}
     by_t = {f.t: [] for f in frames}
     for fr in reply.get("frames", []):
         i = fr.get("i")

@@ -7,7 +7,7 @@
 import argparse, json, time
 from pathlib import Path
 
-from . import api, render, sample, screen, speech, track, verify
+from . import api, lock, render, sample, screen, speech, track, verify
 
 
 def find(clip: Path, out: Path) -> dict:
@@ -45,7 +45,10 @@ def redact(clip: Path, out: Path, verify_passes: int = 3, drop: tuple = (), styl
     clean, passes = out / "clean.mp4", []
     for n in range(verify_passes + 1):
         t = time.time()
-        stats = render.render(clip, clean, items, tracks, info, style)
+        t2 = time.time()
+        locked = lock.lock(clip, items, tracks, info)
+        print(f"locked covers on every frame, {len(locked[1])} guarded frames ({time.time() - t2:.0f}s)")
+        stats = render.render(clip, clean, items, tracks, info, style, locked)
         print(f"rendered {stats['frames']} frames ({stats['frames_covered']} covered), {len(stats['bleeps'])} bleeps "
               f"in {time.time() - t:.0f}s")
         if n == verify_passes:

@@ -46,7 +46,12 @@ def sample(clip, rate: float = 2.0, max_w: int = 1280) -> tuple[list[Frame], dic
     info = probe(clip)
     scale = min(1.0, max_w / info["w"])
     w, h = int(info["w"] * scale) // 2 * 2, int(info["h"] * scale) // 2 * 2
-    proc = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-i", str(clip), "-vf", f"fps={rate},scale={w}:{h}",
+    # Every step-th decoded frame, by number, so frame k is exactly source frame k*step and its time is exact.
+    # (ffmpeg's fps filter keeps the LAST frame of each slot, a quarter second late at 2/s: covers then landed
+    # where moving text was about to be, not where it was.)
+    step = max(1, round(info["fps"] / rate))
+    proc = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-i", str(clip), "-vf",
+                             f"select='not(mod(n\,{step}))',scale={w}:{h}", "-fps_mode", "passthrough",
                              "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
     kept, last, i, size = [], None, 0, w * h * 3
     while chunk := proc.stdout.read(size):
@@ -55,9 +60,9 @@ def sample(clip, rate: float = 2.0, max_w: int = 1280) -> tuple[list[Frame], dic
         rgb = np.frombuffer(chunk, np.uint8).reshape(h, w, 3)
         th = _thumb(rgb)
         if last is None or changed(th, last):
-            kept.append(Frame(round(i / rate, 2), rgb))
+            kept.append(Frame(round(i * step / info["fps"], 3), rgb))
             last = th
         i += 1
     proc.wait()
-    info.update(analysis_w=w, analysis_h=h, sampled=i, kept=len(kept), rate=rate)
+    info.update(analysis_w=w, analysis_h=h, sampled=i, kept=len(kept), rate=info["fps"] / step)
     return kept, info

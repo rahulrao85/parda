@@ -11,6 +11,7 @@ from them (blur and pixelation can be partly reversed). Styles:
 import subprocess
 from functools import lru_cache
 
+import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
@@ -147,8 +148,9 @@ def _cover(rgb: np.ndarray, boxes: list, pad: int, style: str = "mask") -> None:
     h, w, _ = rgb.shape
     src = rgb.copy()  # colours come from the untouched frame, not from a cover drawn a moment ago
     for box in _merge_boxes(boxes):
-        x1, y1 = max(0, box[0] - pad), max(0, box[1] - pad)
-        x2, y2 = min(w, box[2] + pad), min(h, box[3] + pad)
+        px = pad * 2  # model boxes are often a character short at the ends of a line
+        x1, y1 = max(0, box[0] - px), max(0, box[1] - pad)
+        x2, y2 = min(w, box[2] + px), min(h, box[3] + pad)
         bw, bh = x2 - x1, y2 - y1
         if bw < 4 or bh < 4:
             continue
@@ -206,9 +208,27 @@ def _bleep_filter(spans: list[tuple[float, float]]) -> str:
             "[m][s]amix=inputs=2:duration=first:normalize=0[a]")
 
 
-def render(clip, out, items: list[dict], tracks: dict, info: dict, style: str = "mask") -> dict:
+def _frost(rgb: np.ndarray, region, W: int) -> None:
+    """Motion guard: a soft frosted panel over a region while its secret is moving too fast to lock onto.
+    Mostly the flat surrounding colour, with a hint of very coarse blocks (each wider than a word) for motion."""
+    x1, y1, x2, y2 = region
+    if x2 - x1 < 4 or y2 - y1 < 4:
+        return
+    reg = rgb[y1:y2, x1:x2]
+    block = max(32, W // 48)
+    coarse = cv2.resize(cv2.resize(reg, (max(1, (x2 - x1) // block), max(1, (y2 - y1) // block)),
+                                   interpolation=cv2.INTER_AREA), (x2 - x1, y2 - y1), interpolation=cv2.INTER_LINEAR)
+    ring = np.concatenate([reg[0], reg[-1], reg[:, 0], reg[:, -1]])
+    flat = np.median(ring, axis=0)
+    tint = np.array([37, 99, 235], np.float32)
+    rgb[y1:y2, x1:x2] = (coarse * 0.25 + flat * 0.65 + tint * 0.10).astype(np.uint8)
+
+
+def render(clip, out, items: list[dict], tracks: dict, info: dict, style: str = "mask",
+           locked: tuple | None = None) -> dict:
+    """locked = (covers, guards) from lock.lock(): per-frame covers that follow each secret, and motion guards."""
     W, H, fps = info["w"], info["h"], info["fps"]
-    boxes = frame_boxes(items, tracks, info)
+    boxes, guards = locked if locked else (frame_boxes(items, tracks, info), {})
     spans = [(it["start_s"], it["end_s"]) for it in items
              if it["where"] == "speech" and it.get("decision") != "rejected"]
     has_audio = bool(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
@@ -224,16 +244,20 @@ def render(clip, out, items: list[dict], tracks: dict, info: dict, style: str = 
     enc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     dec = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-i", str(clip), "-f", "rawvideo", "-pix_fmt", "rgb24",
                             "-"], stdout=subprocess.PIPE)
+    guarded = 0
     pad, size, n, covered = max(6, W // 160), W * H * 3, 0, 0
     while (chunk := dec.stdout.read(size)) and len(chunk) == size:
         rgb = np.frombuffer(chunk, np.uint8).reshape(H, W, 3)
-        if boxes.get(n):
+        if boxes.get(n) or guards.get(n):
             rgb = rgb.copy()
-            _cover(rgb, boxes[n], pad, style)
-        covered += bool(boxes.get(n))
+            for g in guards.get(n, []):
+                _frost(rgb, g, W)
+            _cover(rgb, boxes.get(n, []), pad, style)
+        covered += bool(boxes.get(n) or guards.get(n))
+        guarded += bool(guards.get(n))
         enc.stdin.write(rgb.tobytes())
         n += 1
     dec.wait()
     enc.stdin.close()
     enc.wait()
-    return {"style": style, "frames": n, "frames_covered": covered, "bleeps": [[round(a, 2), round(b, 2)] for a, b in spans]}
+    return {"style": style, "frames": n, "frames_covered": covered, "frames_guarded": guarded, "bleeps": [[round(a, 2), round(b, 2)] for a, b in spans]}

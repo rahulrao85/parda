@@ -19,18 +19,24 @@ PRICE = {  # USD per 1M tokens (input, output), from dev.meta.ai pricing, 28-Oct
 COST_LOG: list[dict] = []
 
 
-def spark_json(content: list, effort: str = "low") -> dict:
-    """One Muse Spark call that must answer with a JSON object. Returns the parsed object."""
-    t = time.time()
-    r = client.chat.completions.create(model=SPARK, reasoning_effort=effort,
-                                       messages=[{"role": "user", "content": content}])
-    u = r.usage
-    pin, pout = PRICE[SPARK]
-    COST_LOG.append({"model": SPARK, "secs": round(time.time() - t, 1), "in": u.prompt_tokens,
-                     "out": u.completion_tokens, "usd": (u.prompt_tokens * pin + u.completion_tokens * pout) / 1e6})
-    text = r.choices[0].message.content or ""
-    m = re.search(r"\{.*\}", text, re.S)  # tolerate ```json fences or a stray sentence around the object
-    return json.loads(m.group(0)) if m else {}
+def spark_json(content: list, effort: str = "low", attempts: int = 3) -> dict:
+    """One Muse Spark call that must answer with a JSON object. Retries a reply that does not parse; raises
+    ValueError if none does, so a caller never mistakes a broken reply for "nothing private here"."""
+    for attempt in range(attempts):
+        t = time.time()
+        r = client.chat.completions.create(model=SPARK, reasoning_effort=effort,
+                                           messages=[{"role": "user", "content": content}])
+        u = r.usage
+        pin, pout = PRICE[SPARK]
+        COST_LOG.append({"model": SPARK, "secs": round(time.time() - t, 1), "in": u.prompt_tokens,
+                         "out": u.completion_tokens, "usd": (u.prompt_tokens * pin + u.completion_tokens * pout) / 1e6})
+        text = r.choices[0].message.content or ""
+        m = re.search(r"\{.*\}", text, re.S)  # tolerate ```json fences or a stray sentence around the object
+        try:
+            return json.loads(m.group(0)) if m else {}
+        except json.JSONDecodeError:
+            continue
+    raise ValueError(f"Muse Spark returned unparseable JSON {attempts} times")
 
 
 def log_cost(model: str, usd: float, **extra) -> None:
