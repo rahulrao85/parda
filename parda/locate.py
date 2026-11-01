@@ -194,6 +194,12 @@ def _clipped(box, shape) -> bool:
     return box[0] <= 2 or box[2] >= shape[1] - 2
 
 
+def _inside(a, b) -> float:
+    """Share of box a's area that lies inside box b."""
+    ix = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    return ix / max(1, (a[2] - a[0]) * (a[3] - a[1]))
+
+
 def _iou(a, b) -> float:
     ix = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
     u = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - ix
@@ -202,7 +208,10 @@ def _iou(a, b) -> float:
 
 # ---------------------------------------------------------------- value span inside a line
 
-def _match(line: dict, value: str) -> tuple[int, int] | None:
+CURSOR = set("|lI1!")  # what OCR makes of a text cursor at the end of a form field
+
+
+def _match(line: dict, value: str, kind: str | None = None) -> tuple[int, int] | None:
     """[i, j) of the value among the line's normalised characters: exact first, fuzzy only for long values.
     A match must sit at a token boundary in the raw text ("500000" inside "-25,000.00" is not "-5,000.00"), so
     a short value never claims the tail of a longer one."""
@@ -211,11 +220,13 @@ def _match(line: dict, value: str) -> tuple[int, int] | None:
     t = "".join(norm(raw[k]) for k in kept)
     v = norm(value_of(value))
     if len(v) < 3:
-        return None
+        # A 1-2 character value ("25" in a date-of-birth day box) only when it is the whole line.
+        return (0, len(t)) if len(v) >= 2 and t == v else None
 
     def bounded(i: int, j: int) -> bool:  # letters and digits on either side would make it part of a longer token
         a, b = kept[i] - 1, kept[j - 1] + 1
-        return (a < 0 or not raw[a].isalnum()) and (b >= len(raw) or not raw[b].isalnum())
+        after_ok = b >= len(raw) or not raw[b].isalnum() or (b == len(raw) - 1 and raw[b] in CURSOR)
+        return (a < 0 or not raw[a].isalnum()) and after_ok
 
     i = t.find(v)
     while i >= 0:
@@ -223,6 +234,32 @@ def _match(line: dict, value: str) -> tuple[int, int] | None:
             return i, i + len(v)
         i = t.find(v, i + 1)
     L = len(v)
+    if kind == "password" and len(line["text"]) >= 6 and " " not in value.strip() and L >= 6:
+        # (a Spark description such as "masked password dots" is not a string to look for)
+        # Spark and OCR each read a random string a little differently ("QAVbxx*P6Kk" vs "vQAVbxx^P6k6"): a
+        # token of the line that is mostly the same string is the password.
+        from difflib import SequenceMatcher
+        best, bij = 0.0, None
+        pos = 0
+        for tok in line["text"].split():
+            start = line["text"].index(tok, pos)
+            pos = start + len(tok)
+            ks = [k for k in range(start, pos) if k in set(kept)]
+            if len(ks) < 6:
+                continue
+            i, j = kept.index(ks[0]), kept.index(ks[-1]) + 1
+            if abs((j - i) - L) > 3 or not any(ch.isdigit() for ch in t[i:j]):
+                continue  # a label ("Mobile numbe", cut by a popup) is never a password: no digits, wrong length
+            r = SequenceMatcher(None, t[i:j], v).ratio()
+            if r > best:
+                best, bij = r, (i, j)
+        if best >= 0.6:
+            return bij
+    # A value being typed: the line ends with the first 4+ characters of it (a form field mid-entry). Covered
+    # from the fourth character, so a name or an email is not readable letter by letter while it is entered.
+    for n in range(min(L - 1, len(t)), 3, -1):
+        if t.endswith(v[:n]) and bounded(len(t) - n, len(t)):
+            return len(t) - n, len(t)
     if L < 10 or len(t) < L or not any(v[k:k + 6] in t for k in range(0, L - 5, 3)):
         return None  # fuzzy only for long values, and only on a line that shares a 6-character run with it
     # OCR misreads are mostly substitutions (0/O, l/I): the best same-length window must agree on 85% of characters
@@ -248,12 +285,12 @@ def _ink_cols(rgb: np.ndarray, y1: int, y2: int, x1: int, x2: int):
     return ink.any(axis=0), ink
 
 
-def span(rgb: np.ndarray, line: dict, value: str) -> list[int] | None:
+def span(rgb: np.ndarray, line: dict, value: str, kind: str | None = None) -> list[int] | None:
     """Box of `value` inside an OCR line, or None. Character positions come from the recogniser's CTC columns
     (OCR drops `_` and spaces, so a plain character count drifts by half a glyph); each edge then moves to the
     nearest blank column, never more than a third of a glyph into the value. A value at either end of the line
     runs to the last ink, even past a detection box that clipped the final glyph."""
-    ij = _match(line, value)
+    ij = _match(line, value, kind)
     if ij is None:
         return None
     i, j = ij
@@ -345,6 +382,7 @@ class Track:
     lh: int = field(init=False)
     ocr_ok: int = field(init=False)  # last frame OCR itself read the value here (not a carried box)
     followed: int = -1  # last frame its box was moved by the members of its cluster that OCR found again
+    wrong: int = -1     # last frame crop OCR read a different text under the box (it sits on a label, not the value)
 
     def __post_init__(self):
         self.lh = max(8, self.box[3] - self.box[1])
@@ -451,7 +489,7 @@ class Locator:
             if not self._wanted(it, n):
                 continue
             for ln in lines:
-                b = span(rgb, ln, it["text"])
+                b = span(rgb, ln, it["text"], it.get("kind"))
                 if b:
                     hits.append((it, b))
         return hits
@@ -478,7 +516,7 @@ class Locator:
                 # own pixels before it is believed.
                 lh = max(8, b[3] - b[1])
                 region = _clip([b[0] - lh, b[1] - lh // 2, b[2] + lh, b[3] + lh // 2], self.W, self.H)
-                if not any(span(rgb, ln, it["text"]) for ln in self.ocr.crop(rgb, region)):
+                if not any(span(rgb, ln, it["text"], it.get("kind")) for ln in self.ocr.crop(rgb, region)):
                     self.ocr.n["stale_hits"] += 1
                     continue
                 near = None  # a genuine second showing of the value: its own track
@@ -525,6 +563,8 @@ class Locator:
             if vis > 0 and _same(prev, gray, t.box, t.box):
                 if t.confirmed == n - 1:  # the same pixels as a confirmed frame: still the value
                     t.confirmed = n
+                elif vis == 1.0 and n - t.ocr_at >= OCR_EVERY:
+                    self._confirm(t, rgb, n)  # unconfirmed on static pixels: look again now and then
                 continue
             if vis > 0:
                 moving[t.cluster].append(t)
@@ -561,11 +601,15 @@ class Locator:
                         int(t.box[2] + 0.15 * w + t.lh + mx), t.box[3] + t.lh + my], self.W, self.H)
         best = None
         for ln in self.ocr.crop(rgb, region):
-            b = span(rgb, ln, t.item["text"])
+            b = span(rgb, ln, t.item["text"], t.item.get("kind"))
             if b and (best is None or abs(b[1] - t.box[1]) < abs(best[1] - t.box[1])):
                 best = b
         if best:
             t.box, t.confirmed, t.partial, t.ocr_ok = best, n, False, n
+        elif any(ln["score"] >= 0.9 and len(norm(ln["text"])) >= 3
+                 and max(_inside(t.box, ln["box"]), _inside(ln["box"], t.box)) >= 0.4
+                 for ln in self.ocr.crop(rgb, region)):
+            t.wrong = n  # OCR reads something else there with confidence: the box has slid onto other text
 
     def _hint(self, n, rgb, gray) -> None:
         """At a Spark sighting, a value with no confirmed track gets a crop OCR around Spark's (rough) box."""
@@ -576,7 +620,7 @@ class Locator:
             w = hb[2] - hb[0]
             region = _clip([int(hb[0] - 0.25 * w - 40), hb[1] - 2 * h, int(hb[2] + 0.25 * w + 40), hb[3] + 2 * h],
                            self.W, self.H)
-            hits = [(it, b) for ln in self.ocr.crop(rgb, region) if (b := span(rgb, ln, it["text"]))]
+            hits = [(it, b) for ln in self.ocr.crop(rgb, region) if (b := span(rgb, ln, it["text"], it.get("kind")))]
             if hits:
                 self._assign(hits, n, n, gray, rgb)
 
@@ -615,7 +659,7 @@ class Locator:
             # A member its cluster still vouches for stays covered even when its own crop OCR fails: a line half
             # hidden under the viewer's toolbar or bottom edge, or one that is partly off-screen. But only while
             # there is text-grade ink under the box: a box predicted onto blank page or a watermark is a phantom.
-            vouched = n - conf[t.cluster] <= self.grace and (
+            vouched = n - conf[t.cluster] <= self.grace and t.wrong < t.confirmed and (
                 (t.partial and _visible(t.box, self.W, self.H) < 1.0) or _has_ink(gray, t.box))
             if not (own or vouched):
                 continue  # not confirmed for GRACE_S: drop it (a keyframe will find it again if it is there)
@@ -723,7 +767,7 @@ def locate(clip, items: list[dict], info: dict, out_dir: Path) -> dict[str, dict
     A value shown in two places at once gets a second key, "<id>#2"."""
     t0 = time.time()
     text = [it for it in items if it.get("where") == "screen" and it.get("decision") != "rejected"
-            and len(norm(value_of(it.get("text", "")))) >= 3]
+            and len(norm(value_of(it.get("text", "")))) >= 2]
     if not text:
         return {}
     ocr = Ocr(Path("cache/ocr"))
