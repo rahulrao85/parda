@@ -1,13 +1,35 @@
 """Parda command line.
 
     python -m parda find clip.mp4 [-o out/clip]     # writes flags.json, transcript.json, cost.json
-    python -m parda redact clip.mp4 [-o out/clip] [--verify 3] [--drop s3] [--style mask]
-        # find (or reuse flags.json), track, render clean.mp4, verify the output and fix leaks, audit.json
+    python -m parda redact clip.mp4 [-o out/clip] [--verify 3] [--drop s3]
+        # find (or reuse flags.json), locate/track, render clean.mp4, verify the output and fix leaks, audit.json
+
+Text secrets are located by OCR (parda/locate.py: exact value boxes, every frame); photos and other non-text
+items are followed by SAM 3.1 (parda/track.py).
 """
 import argparse, json, time
 from pathlib import Path
 
-from . import api, lock, render, sample, screen, speech, track, verify
+from . import api, locate, render, sample, screen, speech, track, verify
+
+NON_TEXT = getattr(render, "NON_TEXT", {"photo_of_person"})
+
+
+def follow(clip: Path, items: list[dict], info: dict, out: Path) -> dict:
+    """Boxes for every screen item: OCR for text values, SAM for photos and other non-text things."""
+    screen_items = [it for it in items if it["where"] == "screen" and it.get("seen")]
+    text = [it for it in screen_items if it["kind"] not in NON_TEXT]
+    other = [it for it in screen_items if it["kind"] in NON_TEXT]
+    tracks = locate.locate(clip, text, info, out) if text else {}
+    if other:
+        tracks.update(track.track(clip, other, info))
+    return tracks
+
+
+def _aliases(items: list[dict], tracks: dict) -> list[dict]:
+    """A value shown in two places at once has a second key ("s7#2"); give it an item so render draws it."""
+    by_id = {it["id"]: it for it in items}
+    return [dict(by_id[k.split("#")[0]], id=k) for k in tracks if "#" in k and k.split("#")[0] in by_id]
 
 
 def find(clip: Path, out: Path) -> dict:
@@ -26,8 +48,8 @@ def find(clip: Path, out: Path) -> dict:
     return result
 
 
-def redact(clip: Path, out: Path, verify_passes: int = 3, drop: tuple = (), style: str = "mask") -> dict:
-    """Find (or reuse flags.json), track, render, then verify the output and fix what it still shows."""
+def redact(clip: Path, out: Path, verify_passes: int = 3, drop: tuple = ()) -> dict:
+    """Find (or reuse flags.json), locate/track, then verify the output and fix what it still shows."""
     flags_path = out / "flags.json"
     result = json.loads(flags_path.read_text(encoding="utf-8")) if flags_path.exists() else find(clip, out)
     info = result["video"]
@@ -36,19 +58,21 @@ def redact(clip: Path, out: Path, verify_passes: int = 3, drop: tuple = (), styl
     tracks_path = out / "tracks.json"
     if tracks_path.exists() and tracks_path.stat().st_mtime > flags_path.stat().st_mtime:
         tracks = {k: {int(f): b for f, b in v.items()} for k, v in json.loads(tracks_path.read_text()).items()}
+        audit_path = out / "audit.json"
+        if audit_path.exists():  # what earlier verify passes found is tracked too; keep covering it
+            known = {it["id"] for it in items}
+            items += [it for it in json.loads(audit_path.read_text(encoding="utf-8"))["items"]
+                      if it["found_by"] != "find" and it["id"] not in known and it["id"] not in drop]
         print("reusing tracks.json (flags unchanged since tracking)")
     else:
-        tracks = track.track(clip, items, info)
+        tracks = follow(clip, items, info, out)
         tracks_path.write_text(json.dumps(tracks))
-        print(f"tracked {len(tracks)} screen items over {sum(len(v) for v in tracks.values())} frames "
+        print(f"located/tracked {len(tracks)} screen items over {sum(len(v) for v in tracks.values())} frames "
               f"in {time.time() - t:.0f}s")
     clean, passes = out / "clean.mp4", []
     for n in range(verify_passes + 1):
         t = time.time()
-        t2 = time.time()
-        locked = lock.lock(clip, items, tracks, info)
-        print(f"locked covers on every frame, {len(locked[1])} guarded frames ({time.time() - t2:.0f}s)")
-        stats = render.render(clip, clean, items, tracks, info, style, locked)
+        stats = render.render(clip, clean, items + _aliases(items, tracks), tracks, info)
         print(f"rendered {stats['frames']} frames ({stats['frames_covered']} covered), {len(stats['bleeps'])} bleeps "
               f"in {time.time() - t:.0f}s")
         if n == verify_passes:
@@ -63,13 +87,14 @@ def redact(clip: Path, out: Path, verify_passes: int = 3, drop: tuple = (), styl
         for k, lk in enumerate(leaks, start=1):  # fix: track the leak on the source video, render again
             lk["id"], lk["found_by"] = f"v{n + 1}.{k}", f"verify pass {n + 1}"
         items += leaks
-        tracks.update(track.track(clip, leaks, info))
+        tracks.update(follow(clip, leaks, info, out / f"verify{n + 1}"))
+    tracks_path.write_text(json.dumps(tracks))  # now with the boxes of everything verify found, for a re-render
     verdict = "clean" if passes and not passes[-1]["found"] else ("unverified" if not passes else "needs review")
     audit = {"clip": clip.name, "output": clean.name, "sha256": verify.sha256(clean), "verdict": verdict,
              "models": sorted({c["model"] for c in api.COST_LOG}), "render": stats, "verify": passes,
              "dropped_for_test": list(drop), "items": [
                  {k: it.get(k) for k in ("id", "kind", "where", "text", "reason", "start_s", "end_s", "timing")}
-                 | {"frames_tracked": len(tracks.get(it["id"], {})), "decision": it.get("decision", "auto"),
+                 | {"frames_tracked": sum(len(v) for k, v in tracks.items() if k.split("#")[0] == it["id"]), "decision": it.get("decision", "auto"),
                     "found_by": it.get("found_by", "find")}
                  for it in items]}
     (out / "audit.json").write_text(json.dumps(audit, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -89,13 +114,12 @@ def main() -> None:
     r.add_argument("-o", "--out", type=Path)
     r.add_argument("--verify", type=int, default=3, help="max verify-and-fix passes (0 = skip)")
     r.add_argument("--drop", nargs="*", default=[], help="item ids to leave out, to test that verify catches them")
-    r.add_argument("--style", choices=render.STYLES, default="mask", help="how covers look (see parda/render.py)")
     a = p.parse_args()
     out = a.out or Path("out") / a.clip.stem
     if a.cmd == "find":
         find(a.clip, out)
     else:
-        redact(a.clip, out, a.verify, tuple(a.drop), a.style)
+        redact(a.clip, out, a.verify, tuple(a.drop))
 
 
 if __name__ == "__main__":

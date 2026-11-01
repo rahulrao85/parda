@@ -16,7 +16,8 @@ def scan(clean: Path, work: Path) -> list[dict]:
     """Secrets still present in the rendered video, as items on the same timeline as the source."""
     frames, info = sample.sample(clean)
     on_screen = [it for it in screen.find(frames, info, Path("cache/spark"), verify=True)
-                 if not COVER_WORDS.search(f"{it['text']} {it.get('reason', '')}")]
+                 if not COVER_WORDS.search(f"{it['text']} {it.get('reason', '')}")
+                 and len(re.sub(r"[^a-z0-9@]", "", it["text"].lower())) >= 5]  # "9", "-5,", "00.00": fragments
     spoken, _ = speech.find(clean, info, work)
     return on_screen + spoken
 

@@ -1,128 +1,87 @@
-"""Render the clean video: an opaque cover over every tracked secret, a bleep over every spoken one.
+"""Render the clean video: every tracked secret typed over as asterisks, every spoken one bleeped.
 
-Covers are painted only from the pixels AROUND a secret, never from the secret itself, so nothing can be recovered
-from them (blur and pixelation can be partly reversed). Styles:
-  mask   only the value is replaced by ****** with a small "hidden by Parda"; the document stays readable (default)
-  smart  text becomes password dots, one row per line; ID documents become a card with a lock
-  erase  the secret is painted out in the surrounding colour, as if it was never there
-  pill   a rounded "private" chip with a lock
-  box    a flat patch with a blue edge and "hidden by Parda"
+A text value's pixels are replaced by its line's own paper colour, then one row of asterisks is drawn in the line's
+own ink colour at the line's own size, so the file looks as if it was typed that way: no tint, box, edge or label.
+A photo or other non-text item becomes a flat patch in the surrounding colour. Colours are read only from pixels
+OUTSIDE the box (paper) or as a single median (ink), never blurred or pixelated, so nothing can be recovered.
 """
 import subprocess
 from functools import lru_cache
 
-import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-STYLES = ("mask", "smart", "erase", "pill", "box")
-EDGE = np.array([37, 99, 235], np.uint8)
-DOC_MIN_H = 70  # taller than a line of text: treat as a document or panel, not a single value
+NON_TEXT = {"photo_of_person", "face", "image"}
+PAD = 1            # px added around every exact box
+RING = 2           # px of surrounding colour sampled for the paper
+INSET = 3          # px a non-text patch stays inside its box, so a photo's frame line survives
+MIN_CONTRAST = 25  # luminance levels between ink and paper below which the ink guess is not trusted
 
 
+def _is_text(kind: str, w: int, h: int) -> bool:
+    if kind in NON_TEXT:
+        return False
+    return not (kind == "other" and h > 70 and w > 150)
+
+
+@lru_cache(maxsize=8)
 def _font(size: int):
-    try:
-        return ImageFont.truetype("arialbd.ttf" if size >= 18 else "arial.ttf", size)
-    except OSError:
-        return ImageFont.load_default()
-
-
-@lru_cache(maxsize=16)
-def _stamp(text: str, size: int, lock: bool = True) -> np.ndarray:
-    """Text (with a small padlock in front) as a 0..1 alpha mask, rendered once per text and size."""
-    font = _font(size)
-    tw = int(ImageDraw.Draw(Image.new("L", (1, 1))).textlength(text, font=font))
-    lw = int(size * 0.9) if lock else 0
-    img = Image.new("L", (tw + lw + (size // 3 if lock else 0) + 2, int(size * 1.4)), 0)
-    d = ImageDraw.Draw(img)
-    if lock:  # shackle arc over a rounded body
-        bx, by, bw, bh = 1, int(size * 0.55), lw - 2, int(size * 0.7)
-        d.arc([bx + bw * 0.18, by - bh * 0.75, bx + bw * 0.82, by + bh * 0.35], 180, 360, fill=255,
-              width=max(2, size // 8))
-        d.rounded_rectangle([bx, by, bx + bw, by + bh], radius=max(2, size // 6), fill=255)
-    d.text((lw + (size // 3 if lock else 0), img.height / 2), text, font=font, fill=255, anchor="lm")
-    return np.asarray(img, np.float32)[..., None] / 255
-
-
-@lru_cache(maxsize=64)
-def _ink(text: str, size: int, mono: bool = False) -> np.ndarray:
-    """Text as a 0..1 alpha mask cropped tight to its ink, so asterisks (which sit high in most fonts) centre."""
-    try:
-        font = ImageFont.truetype("consolab.ttf" if mono else "arial.ttf", size)
-    except OSError:
-        font = ImageFont.load_default()
-    img = Image.new("L", (size * (len(text) + 2), size * 2), 0)
-    ImageDraw.Draw(img).text((size // 2, size // 2), text, font=font, fill=255)
-    box = img.getbbox() or (0, 0, 1, 1)
-    return np.asarray(img.crop(box), np.float32)[..., None] / 255
-
-
-def _mask_cover(rgb, x1, y1, x2, y2, base, dark) -> None:
-    """****** where the value was, then 'hidden by Parda' in the space left over, both centred on the line."""
-    bw, bh = x2 - x1, y2 - y1
-    tint = np.array([37, 99, 235], np.float32)
-    rgb[y1:y2, x1:x2] = (base * 0.9 + tint * 0.1).astype(np.uint8)  # a faint blue wash marks the field
-    size = int(np.clip(bh * 0.75, 10, 44))
-    stars_ink = (226, 232, 240) if dark else (51, 65, 85)
-    label = _ink("hidden by Parda", int(np.clip(size * 0.45, 9, 16)))
-    n = int(np.clip(round(bw * 0.5 / (size * 0.55)), 3, 14))
-    while n >= 3:
-        stars = _ink("*" * n, size, mono=True)
-        room = bw - 12 - stars.shape[1]
-        if room >= 0:
-            break
-        n -= 1
-    else:
-        return
-    x = x1 + 6
-    _blend(rgb, y1 + (bh - stars.shape[0]) // 2, x, stars, stars_ink)
-    if room >= label.shape[1] + 10 and bh >= label.shape[0] + 2:
-        _blend(rgb, y1 + (bh - label.shape[0]) // 2, x + stars.shape[1] + 10, label,
-               (147, 197, 253) if dark else (37, 99, 235))
-
-
-@lru_cache(maxsize=64)
-def _disc(r: int) -> np.ndarray:
-    y, x = np.ogrid[-r:r + 1, -r:r + 1]
-    return (x * x + y * y <= r * r)
+    for name in ("consola.ttf", "DejaVuSansMono.ttf"):
+        try:
+            return ImageFont.truetype(name, size)
+        except OSError:
+            pass
+    return ImageFont.load_default()
 
 
 @lru_cache(maxsize=256)
-def _rounded(w: int, h: int, r: int) -> np.ndarray:
-    img = Image.new("L", (w, h), 0)
-    ImageDraw.Draw(img).rounded_rectangle([0, 0, w - 1, h - 1], radius=r, fill=255)
-    return np.asarray(img) > 127
+def _stars(n: int, size: int) -> np.ndarray:
+    """n asterisks as a 0..1 alpha mask cropped tight to their ink (asterisks sit high in a font; this centres them)."""
+    img = Image.new("L", (size * (n + 2), size * 2), 0)
+    ImageDraw.Draw(img).text((size // 2, size // 2), "*" * n, font=_font(size), fill=255)
+    return np.asarray(img.crop(img.getbbox() or (0, 0, 1, 1)), np.float32)[..., None] / 255
 
 
-def _blend(rgb, y, x, alpha, ink) -> None:
-    h, w = alpha.shape[:2]
-    h, w = min(h, rgb.shape[0] - y), min(w, rgb.shape[1] - x)
-    if h <= 0 or w <= 0:
-        return
-    region = rgb[y:y + h, x:x + w].astype(np.float32)
-    rgb[y:y + h, x:x + w] = (region * (1 - alpha[:h, :w]) + np.asarray(ink, np.float32) * alpha[:h, :w]).astype(np.uint8)
+def _strip(width: int, height: int) -> np.ndarray | None:
+    """The widest row of asterisks (at least 3) that fits `width`, glyphs ~0.9 x the line height."""
+    size = int(np.clip(round(height * 0.9), 8, 48))
+    while True:
+        one = _stars(1, size).shape[1]
+        adv = _stars(2, size).shape[1] - one or max(1, size // 2)
+        n = max(3, (width - one) // adv + 1)
+        while n > 3 and _stars(n, size).shape[1] > width:
+            n -= 1
+        s = _stars(n, size)
+        if s.shape[1] <= width or size <= 8:
+            return s[:, :width] if s.shape[1] > width else s
+        size -= 1
 
 
-def frame_boxes(items: list[dict], tracks: dict, info: dict) -> dict[int, list[list[int]]]:
-    """Every box to cover, by source frame: SAM's track AND Spark's own sightings. During a zoom, scroll or window
-    jump SAM can sit on the wrong line for a moment, so a sighting is always covered too; a few extra pixels of
-    patch cost nothing, a leak costs everything."""
-    fps, hold = info["fps"], 0.5 / info.get("rate", 2)
-    out: dict[int, list] = {}
-    for it in items:
-        if it["where"] != "screen" or it.get("decision") == "rejected":
-            continue
-        kind = it.get("kind", "other")
-        for n, box in tracks.get(it["id"], {}).items():
-            out.setdefault(n, []).append([*box[:4], kind])
-        for s in it.get("seen", []):
-            for n in range(max(0, round((s["t"] - hold) * fps)), round((s["t"] + hold) * fps) + 1):
-                out.setdefault(n, []).append([*s["box"][:4], kind])
-    return out
+def _lum(px: np.ndarray) -> np.ndarray:
+    return px[..., 0] * 0.299 + px[..., 1] * 0.587 + px[..., 2] * 0.114
+
+
+def _ink_and_paper(src: np.ndarray, x1: int, y1: int, x2: int, y2: int):
+    """paper = median of the ring just outside the box; ink = median of the 10% of box pixels farthest from it."""
+    H, W, _ = src.shape
+    rx1, ry1, rx2, ry2 = max(0, x1 - RING), max(0, y1 - RING), min(W, x2 + RING), min(H, y2 + RING)
+    outer = src[ry1:ry2, rx1:rx2].reshape(-1, 3)
+    keep = np.ones((ry2 - ry1, rx2 - rx1), bool)
+    keep[y1 - ry1:y2 - ry1, x1 - rx1:x2 - rx1] = False
+    ring = outer[keep.ravel()]
+    inside = src[y1:y2, x1:x2].reshape(-1, 3).astype(np.float32)
+    paper = np.median(ring if len(ring) else inside, axis=0)
+    pl = float(_lum(paper))
+    d = np.abs(_lum(inside) - pl)
+    k = max(1, len(d) // 10)
+    ink = np.median(inside[np.argpartition(d, -k)[-k:]], axis=0)
+    if abs(float(_lum(ink)) - pl) < MIN_CONTRAST:
+        ink = np.array([200, 200, 200] if pl < 128 else [60, 60, 60], np.float32)
+    return paper.astype(np.float32), ink.astype(np.float32)
 
 
 def _merge_boxes(boxes: list) -> list:
-    """One cover per secret: SAM's box and Spark's box for the same thing overlap, so draw their union once."""
+    """One cover per secret: overlapping boxes of the same class (text / non-text) become their union."""
     out = [list(b) for b in boxes]
     changed = True
     while changed:
@@ -130,12 +89,12 @@ def _merge_boxes(boxes: list) -> list:
         for i in range(len(out)):
             for j in range(i + 1, len(out)):
                 a, b = out[i], out[j]
+                if (a[4] in NON_TEXT) != (b[4] in NON_TEXT):
+                    continue
                 ix = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
                 small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
                 if small > 0 and ix / small > 0.3:
-                    kinds = {a[4] if len(a) > 4 else "other", b[4] if len(b) > 4 else "other"}
-                    out[i] = [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]),
-                              "id_document" if "id_document" in kinds else kinds.pop()]
+                    out[i] = [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]), a[4]]
                     del out[j]
                     changed = True
                     break
@@ -144,61 +103,46 @@ def _merge_boxes(boxes: list) -> list:
     return out
 
 
-def _cover(rgb: np.ndarray, boxes: list, pad: int, style: str = "mask") -> None:
-    h, w, _ = rgb.shape
-    src = rgb.copy()  # colours come from the untouched frame, not from a cover drawn a moment ago
-    for box in _merge_boxes(boxes):
-        px = pad * 2  # model boxes are often a character short at the ends of a line
-        x1, y1 = max(0, box[0] - px), max(0, box[1] - pad)
-        x2, y2 = min(w, box[2] + px), min(h, box[3] + pad)
+def frame_boxes(items: list[dict], tracks: dict) -> dict[int, list]:
+    """{frame: [[x1, y1, x2, y2, kind], ...]} from the exact tracked boxes only."""
+    kinds = {it["id"]: it.get("kind", "other") for it in items
+             if it.get("where") == "screen" and it.get("decision") != "rejected"}
+    out: dict[int, list] = {}
+    for iid, per in tracks.items():
+        if iid not in kinds:
+            continue
+        for n, box in per.items():
+            out.setdefault(int(n), []).append([*(int(round(v)) for v in box[:4]), kinds[iid]])
+    return out
+
+
+def cover(rgb: np.ndarray, boxes: list) -> None:
+    """Paint every box in place. Colours come from the untouched frame, not from a cover drawn a moment ago."""
+    H, W, _ = rgb.shape
+    src = rgb.copy()
+    for b in _merge_boxes(boxes):
+        x1, y1 = max(0, b[0] - PAD), max(0, b[1] - PAD)
+        x2, y2 = min(W, b[2] + PAD), min(H, b[3] + PAD)
         bw, bh = x2 - x1, y2 - y1
-        if bw < 4 or bh < 4:
+        if bw < 2 or bh < 2:
             continue
-        ring = np.concatenate([src[y1, x1:x2], src[y2 - 1, x1:x2], src[y1:y2, x1], src[y1:y2, x2 - 1]])
-        base = np.median(ring, axis=0)
-        dark = base.mean() < 128
-        ink = (203, 213, 225) if dark else (71, 85, 105)
-        rgb[y1:y2, x1:x2] = base.astype(np.uint8)  # every style starts by painting the secret out
-        if style == "erase":
+        if not _is_text(b[4], bw, bh):  # a photo: SAM's box includes the frame around it; keep that frame
+            x1, y1, x2, y2 = x1 + INSET, y1 + INSET, x2 - INSET, y2 - INSET
+            if x2 - x1 < 2 or y2 - y1 < 2:
+                continue
+            paper, _ = _ink_and_paper(src, x1, y1, x2, y2)
+            rgb[y1:y2, x1:x2] = paper.astype(np.uint8)
             continue
-        if style == "mask":
-            _mask_cover(rgb, x1, y1, x2, y2, base, dark)
+        paper, ink = _ink_and_paper(src, x1, y1, x2, y2)
+        rgb[y1:y2, x1:x2] = paper.astype(np.uint8)
+        if bw < 6:
             continue
-        if style == "box":
-            rgb[y1:y2, x1:x2] = np.clip(base + (22 if dark else -22), 0, 255).astype(np.uint8)
-            rgb[y1:y1 + 2, x1:x2] = rgb[y2 - 2:y2, x1:x2] = EDGE
-            rgb[y1:y2, x1:x1 + 2] = rgb[y1:y2, x2 - 2:x2] = EDGE
-            lab = _stamp("hidden by Parda", 15, lock=False)
-            if bw >= lab.shape[1] + 16 and bh >= lab.shape[0] + 2:
-                _blend(rgb, (y1 + y2 - lab.shape[0]) // 2, x1 + 8, lab, ink)
-            continue
-        kind = box[4] if len(box) > 4 else "other"
-        if style == "pill" or (style == "smart" and kind == "id_document" and bh >= DOC_MIN_H):
-            tint = np.array([238, 242, 255] if not dark else [30, 41, 59], np.float32)
-            card = (base * 0.35 + tint * 0.65) if style == "smart" else tint
-            mask = _rounded(bw, bh, min(bh // 2 if style == "pill" else 14, 40))
-            reg = rgb[y1:y2, x1:x2]
-            reg[mask] = card.astype(np.uint8)
-            edge = mask & ~np.pad(mask[2:-2, 2:-2], 2) if bw > 4 and bh > 4 else mask
-            reg[edge] = (EDGE * 0.7 + base * 0.3).astype(np.uint8)
-            label = "Private document" if style == "smart" else "private"
-            size = int(np.clip(bh * (0.12 if style == "smart" else 0.55), 11, 28))
-            lab = _stamp(label, size)
-            if bw >= lab.shape[1] + 12 and bh >= lab.shape[0] + 2:
-                _blend(rgb, (y1 + y2 - lab.shape[0]) // 2, (x1 + x2 - lab.shape[1]) // 2, lab, EDGE if not dark
-                       else (147, 197, 253))
-            continue
-        # smart, text: password dots, one row per line of text in the box
-        line = max(18, round(30 * w / 1920))
-        rows = max(1, round(bh / line)) if bh > 1.6 * line else 1
-        r = int(np.clip(bh / rows * 0.17, 2, 9))
-        disc, step = _disc(r), r * 3
-        for k in range(rows):
-            cy = y1 + round((k + 0.5) * bh / rows)
-            for cx in range(x1 + 2 * r, x2 - r, step):
-                reg = rgb[cy - r:cy + r + 1, cx - r:cx + r + 1]
-                if reg.shape[:2] == disc.shape:
-                    reg[disc] = ink
+        a = _strip(bw - 2, bh)
+        ah, aw = a.shape[:2]
+        oy, ox = max(0, y1 + (bh - ah) // 2), x1 + 2
+        h, w = min(ah, H - oy), min(aw, W - ox)
+        reg = rgb[oy:oy + h, ox:ox + w].astype(np.float32)
+        rgb[oy:oy + h, ox:ox + w] = (reg * (1 - a[:h, :w]) + ink * a[:h, :w]).astype(np.uint8)
 
 
 def _bleep_filter(spans: list[tuple[float, float]]) -> str:
@@ -208,27 +152,10 @@ def _bleep_filter(spans: list[tuple[float, float]]) -> str:
             "[m][s]amix=inputs=2:duration=first:normalize=0[a]")
 
 
-def _frost(rgb: np.ndarray, region, W: int) -> None:
-    """Motion guard: a soft frosted panel over a region while its secret is moving too fast to lock onto.
-    Mostly the flat surrounding colour, with a hint of very coarse blocks (each wider than a word) for motion."""
-    x1, y1, x2, y2 = region
-    if x2 - x1 < 4 or y2 - y1 < 4:
-        return
-    reg = rgb[y1:y2, x1:x2]
-    block = max(32, W // 48)
-    coarse = cv2.resize(cv2.resize(reg, (max(1, (x2 - x1) // block), max(1, (y2 - y1) // block)),
-                                   interpolation=cv2.INTER_AREA), (x2 - x1, y2 - y1), interpolation=cv2.INTER_LINEAR)
-    ring = np.concatenate([reg[0], reg[-1], reg[:, 0], reg[:, -1]])
-    flat = np.median(ring, axis=0)
-    tint = np.array([37, 99, 235], np.float32)
-    rgb[y1:y2, x1:x2] = (coarse * 0.25 + flat * 0.65 + tint * 0.10).astype(np.uint8)
-
-
-def render(clip, out, items: list[dict], tracks: dict, info: dict, style: str = "mask",
-           locked: tuple | None = None) -> dict:
-    """locked = (covers, guards) from lock.lock(): per-frame covers that follow each secret, and motion guards."""
+def render(clip, out, items: list[dict], tracks: dict, info: dict) -> dict:
+    """tracks = {item_id: {frame: [x1, y1, x2, y2]}}: exact value boxes in source pixels. Only those are drawn."""
     W, H, fps = info["w"], info["h"], info["fps"]
-    boxes, guards = locked if locked else (frame_boxes(items, tracks, info), {})
+    boxes = frame_boxes(items, tracks)
     spans = [(it["start_s"], it["end_s"]) for it in items
              if it["where"] == "speech" and it.get("decision") != "rejected"]
     has_audio = bool(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
@@ -240,24 +167,21 @@ def render(clip, out, items: list[dict], tracks: dict, info: dict, style: str = 
         cmd += ["-filter_complex", _bleep_filter(spans), "-map", "0:v", "-map", "[a]"]
     elif has_audio:
         cmd += ["-map", "0:v", "-map", "1:a"]
-    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(out)]
+    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+            str(out)]
     enc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     dec = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-i", str(clip), "-f", "rawvideo", "-pix_fmt", "rgb24",
                             "-"], stdout=subprocess.PIPE)
-    guarded = 0
-    pad, size, n, covered = max(6, W // 160), W * H * 3, 0, 0
+    size, n, covered = W * H * 3, 0, 0
     while (chunk := dec.stdout.read(size)) and len(chunk) == size:
         rgb = np.frombuffer(chunk, np.uint8).reshape(H, W, 3)
-        if boxes.get(n) or guards.get(n):
+        if boxes.get(n):
             rgb = rgb.copy()
-            for g in guards.get(n, []):
-                _frost(rgb, g, W)
-            _cover(rgb, boxes.get(n, []), pad, style)
-        covered += bool(boxes.get(n) or guards.get(n))
-        guarded += bool(guards.get(n))
+            cover(rgb, boxes[n])
+            covered += 1
         enc.stdin.write(rgb.tobytes())
         n += 1
     dec.wait()
     enc.stdin.close()
     enc.wait()
-    return {"style": style, "frames": n, "frames_covered": covered, "frames_guarded": guarded, "bleeps": [[round(a, 2), round(b, 2)] for a, b in spans]}
+    return {"frames": n, "frames_covered": covered, "bleeps": [[round(a, 2), round(b, 2)] for a, b in spans]}

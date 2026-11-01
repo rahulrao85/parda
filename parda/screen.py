@@ -30,10 +30,10 @@ Include every frame number, with an empty flags list when nothing is private."""
 # Verify passes look at Parda's own output, where covers are already drawn. Without this, Spark reads a row of dots
 # as "a redacted secret" and every pass covers more of the screen.
 VERIFY_NOTE = """
-These frames were already redacted. Asterisks (****) with "hidden by Parda", rows of dots, lock cards, flat
-patches and "private" chips are covers that already hide something: never flag a cover. Documents, labels and titles
-are meant to stay visible. Flag only private VALUES that are still READABLE, even partly (a few visible characters
-of a key, number or name count)."""
+These frames were already redacted. A redacted value looks like a row of asterisks (****) in the text's own colour,
+as if it was typed that way, and a redacted photo or image is a flat patch in the surrounding colour. Those are covers
+that already hide something: never flag them. Documents, labels and titles are meant to stay visible. Flag only
+private VALUES that are still READABLE, even partly (a few visible characters of a key, number or name count)."""
 
 
 def _jpeg(frame: Frame) -> bytes:

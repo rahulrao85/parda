@@ -6,11 +6,6 @@
       "where": "screen"
     },
     {
-      "kind": "id_document",
-      "text": "fake_pan_card.pdf",
-      "where": "screen"
-    },
-    {
       "kind": "bank_detail",
       "text": "000123456789",
       "where": "screen"
