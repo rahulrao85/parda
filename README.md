@@ -68,7 +68,10 @@ Full-frame OCR (RapidOCR, CPU, in full-width strips) runs only on keyframes: the
 screen changed, every frame of a layout jump such as a zoom or a maximise. Between keyframes each value is carried
 while its pixels are unchanged and moved by phase correlation while it scrolls or is dragged, with crop OCR to
 confirm. Values first found together move together, so one scrolling in from off-screen is predicted from its
-neighbours. A value that cannot be confirmed is dropped after 0.3 s rather than covered by a large guess.
+neighbours. A value that cannot be confirmed is dropped after 0.3 s rather than covered by a large guess. Two
+small rules keep the per-frame decisions honest: a hit that disagrees with a track proved on the same frame is
+believed only if OCR reads the value again at the new spot, and a value seen on two frames a few frames apart is
+covered in between.
 
 **An LLM finds, rules guarantee the basics, the verify agent checks the output.** One model call is not the same
 every time, so an email pattern or a run of five spoken digits is always bleeped whatever Spark says, and the

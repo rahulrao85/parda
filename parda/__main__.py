@@ -32,6 +32,27 @@ def _aliases(items: list[dict], tracks: dict) -> list[dict]:
     return [dict(by_id[k.split("#")[0]], id=k) for k in tracks if "#" in k and k.split("#")[0] in by_id]
 
 
+def _known(text: str, known: set[str]) -> bool:
+    """Is this verify finding a value Parda already covers? Spark reads a half-covered or small value with a letter
+    or two wrong ("priya.snama@example.com"), which must not become a second item for the same secret."""
+    if text in known:
+        return True
+    if text.isdigit() or not any(c.isalpha() for c in text):
+        return False  # a number one digit off is a different amount or account, not a misread
+    return len(text) >= 8 and any(abs(len(k) - len(text)) <= 2 and _edits(k, text) <= 2 for k in known)
+
+
+def _edits(a: str, b: str) -> int:
+    """Levenshtein distance; the strings are short."""
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
 def find(clip: Path, out: Path) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     t = time.time()
@@ -75,6 +96,10 @@ def redact(clip: Path, out: Path, verify_passes: int = 3, drop: tuple = ()) -> d
         stats = render.render(clip, clean, items + _aliases(items, tracks), tracks, info)
         print(f"rendered {stats['frames']} frames ({stats['frames_covered']} covered), {len(stats['bleeps'])} bleeps "
               f"in {time.time() - t:.0f}s")
+        expected = round(info["duration"] * info["fps"])
+        if abs(stats["frames"] - expected) > 1:
+            print(f"WARNING: rendered {stats['frames']} frames but the clip has about {expected}: the decoder dropped "
+                  f"frames (a damaged read?); covers after the drop may be a frame off")
         if n == verify_passes:
             break
         t = time.time()
@@ -84,10 +109,22 @@ def redact(clip: Path, out: Path, verify_passes: int = 3, drop: tuple = ()) -> d
         print(f"verify pass {n + 1}: {len(leaks)} still visible or audible ({time.time() - t:.0f}s)")
         if not leaks:
             break
-        for k, lk in enumerate(leaks, start=1):  # fix: track the leak on the source video, render again
+        # A leak that is a value Parda already knows is a location miss, not a new secret: no new item, but the
+        # whole set is located again below. Anything new becomes an item.
+        known = {screen._norm(it["text"]) for it in items if it["where"] == "screen"}
+        new = [lk for lk in leaks if lk["where"] != "screen" or not _known(screen._norm(lk["text"]), known)]
+        for k, lk in enumerate(new, start=1):  # fix: track the leak on the source video, render again
             lk["id"], lk["found_by"] = f"v{n + 1}.{k}", f"verify pass {n + 1}"
-        items += leaks
-        tracks.update(follow(clip, leaks, info, out / f"verify{n + 1}"))
+        items += new
+        leaks = new
+        # Text leaks are located together with everything already known, so they share its clusters (a value
+        # scrolling in is predicted from its neighbours); the OCR cache makes the repeat pass cheap.
+        text = [it for it in items if it["where"] == "screen" and it.get("seen") and it["kind"] not in NON_TEXT]
+        other = [lk for lk in leaks if lk["where"] == "screen" and lk.get("seen") and lk["kind"] in NON_TEXT]
+        tracks = {k: v for k, v in tracks.items() if k.split("#")[0] not in {it["id"] for it in text}}
+        tracks.update(locate.locate(clip, text, info, out / f"verify{n + 1}"))
+        if other:
+            tracks.update(track.track(clip, other, info))
     tracks_path.write_text(json.dumps(tracks))  # now with the boxes of everything verify found, for a re-render
     verdict = "clean" if passes and not passes[-1]["found"] else ("unverified" if not passes else "needs review")
     audit = {"clip": clip.name, "output": clean.name, "sha256": verify.sha256(clean), "verdict": verdict,
