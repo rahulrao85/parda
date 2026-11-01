@@ -170,8 +170,8 @@ def render(clip, out, items: list[dict], tracks: dict, info: dict) -> dict:
     cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
             str(out)]
     enc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-    dec = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-i", str(clip), "-f", "rawvideo", "-pix_fmt", "rgb24",
-                            "-"], stdout=subprocess.PIPE)
+    dec = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-i", str(clip), "-fps_mode", "cfr", "-r", f"{fps}",
+                            "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)  # same clock as locate.py
     size, n, covered = W * H * 3, 0, 0
     while (chunk := dec.stdout.read(size)) and len(chunk) == size:
         rgb = np.frombuffer(chunk, np.uint8).reshape(H, W, 3)

@@ -25,7 +25,7 @@ import numpy as np
 
 from . import sample
 
-OCR_VERSION = "locate-v2"  # bump when the OCR call changes (keys the cache)
+OCR_VERSION = "locate-v3"  # bump when the OCR call changes (keys the cache)
 STRIP_H, STRIP_OVERLAP = 360, 96  # overlap > the tallest line, so every line is whole in at least one strip
 GRACE_S = 0.3        # keep covering an unconfirmed value this long, then drop it
 MOTION_CAP_S = 0.5   # full-frame OCR at most this often while the screen keeps changing and every value is confirmed
@@ -33,7 +33,8 @@ UNSURE_CAP_S = 0.1   # ... and at most this often while some value is not confir
 # (A value that appears on a still screen between two keyframes is backfilled: see Locator._backfill.)
 OCR_EVERY = 10       # frames between confirming crop OCRs for a moving value whose pixels still line up
 JUMP_FRAC = 0.3      # share of thumbnail blocks changed in one frame that counts as a layout jump
-POST_JUMP_S = 0.3    # full-frame OCR on every frame this long after a jump, so nothing waits for the next keyframe
+POST_JUMP_S = 0.6    # full-frame OCR on every frame this long after a jump, so nothing waits for the next keyframe
+EDGE_BAND = 160      # px beyond the frame's shift that the entry-edge scan covers while the screen scrolls
 SAME = 3.0           # mean grey difference under which two crops show the same pixels (codec noise passes)
 BACKFILL_S = 0.7     # look back this far for a value that was already there before the keyframe that found it
 MIN_SCORE = 0.5      # OCR line confidence to keep a line
@@ -67,6 +68,7 @@ class Ocr:
 
     def _lines(self, rgb: np.ndarray) -> list[dict]:
         """Detect + recognise. Each line: box [x1,y1,x2,y2], text, score, chars [[ch, centre x], ...]."""
+        rgb = _detint(rgb)
         t = time.time()
         quads, _ = self.eng.text_det(rgb)
         self.n["det_ms"] += int(1000 * (time.time() - t))
@@ -160,6 +162,20 @@ class Ocr:
                 for ln in lines]
 
 
+def _detint(rgb: np.ndarray) -> np.ndarray:
+    """Pale coloured pixels (a SPECIMEN watermark, a selection tint) become paper before OCR: the recogniser
+    could not read an amount with a red watermark across it, so the amount stayed uncovered for seconds. Text
+    is dark and survives; a dark coloured heading is dark too."""
+    c = rgb.astype(np.int16)
+    lum = (c[..., 0] * 30 + c[..., 1] * 59 + c[..., 2] * 11) // 100
+    tint = (c.max(axis=2) - c.min(axis=2) > 25) & (lum > 150)
+    if not tint.any():
+        return rgb
+    out = rgb.copy()
+    out[tint] = 255
+    return out
+
+
 def _tight(rgb: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> tuple[int, int, int, int]:
     """The detection box cut to its ink plus 3 px. Detection boxes jitter by a pixel as text moves; the ink does
     not, so a line that only scrolled or was dragged hits the recognition cache."""
@@ -187,21 +203,37 @@ def _iou(a, b) -> float:
 # ---------------------------------------------------------------- value span inside a line
 
 def _match(line: dict, value: str) -> tuple[int, int] | None:
-    """[i, j) of the value among the line's normalised characters: exact first, fuzzy only for long values."""
-    t = "".join(norm(c) for c, _ in line["chars"]) if line["chars"] else norm(line["text"])
+    """[i, j) of the value among the line's normalised characters: exact first, fuzzy only for long values.
+    A match must sit at a token boundary in the raw text ("500000" inside "-25,000.00" is not "-5,000.00"), so
+    a short value never claims the tail of a longer one."""
+    raw = [c for c, _ in line["chars"]] if line["chars"] else list(line["text"])
+    kept = [k for k, c in enumerate(raw) if norm(c)]  # raw index of every normalised character
+    t = "".join(norm(raw[k]) for k in kept)
     v = norm(value_of(value))
     if len(v) < 3:
         return None
+
+    def bounded(i: int, j: int) -> bool:  # letters and digits on either side would make it part of a longer token
+        a, b = kept[i] - 1, kept[j - 1] + 1
+        return (a < 0 or not raw[a].isalnum()) and (b >= len(raw) or not raw[b].isalnum())
+
     i = t.find(v)
-    if i >= 0:
-        return i, i + len(v)
-    if len(v) < 10:
+    while i >= 0:
+        if bounded(i, i + len(v)):
+            return i, i + len(v)
+        i = t.find(v, i + 1)
+    L = len(v)
+    if L < 10 or len(t) < L or not any(v[k:k + 6] in t for k in range(0, L - 5, 3)):
+        return None  # fuzzy only for long values, and only on a line that shares a 6-character run with it
+    # OCR misreads are mostly substitutions (0/O, l/I): the best same-length window must agree on 85% of characters
+    best, bi = 0, -1
+    for s in range(len(t) - L + 1):
+        eq = sum(a == b for a, b in zip(t[s:s + L], v))
+        if eq > best:
+            best, bi = eq, s
+    if best < 0.85 * L or not bounded(bi, bi + L):
         return None
-    m = SequenceMatcher(None, t, v, autojunk=False).find_longest_match(0, len(t), 0, len(v))
-    if m.size < 0.85 * len(v):
-        return None
-    i = max(0, m.a - m.b)  # where the value starts if the misread characters line up
-    return i, min(len(t), i + len(v))
+    return bi, bi + L
 
 
 def _ink_cols(rgb: np.ndarray, y1: int, y2: int, x1: int, x2: int):
@@ -311,9 +343,12 @@ class Track:
     ocr_at: int         # last frame a crop OCR ran for it
     partial: bool = False  # (partly) off-screen since it was last confirmed: its cluster vouches for it
     lh: int = field(init=False)
+    ocr_ok: int = field(init=False)  # last frame OCR itself read the value here (not a carried box)
+    followed: int = -1  # last frame its box was moved by the members of its cluster that OCR found again
 
     def __post_init__(self):
         self.lh = max(8, self.box[3] - self.box[1])
+        self.ocr_ok = self.confirmed
 
 
 def _clip(box, W, H):
@@ -340,10 +375,13 @@ def _same(a: np.ndarray, b: np.ndarray, ba, bb) -> bool:
 
 
 def _has_ink(gray: np.ndarray, box) -> bool:
-    """Is there anything drawn under the box (text, a frame, a toolbar), or is it blank paper?"""
+    """Is there text-grade contrast under the box (glyphs, a toolbar edge), or only paper and a faint watermark?"""
     b = _clip([int(v) for v in box], gray.shape[1], gray.shape[0])
-    reg = gray[b[1]:b[3], b[0]:b[2]]
-    return reg.size > 0 and float(reg.std()) > 6
+    reg = gray[b[1]:b[3], b[0]:b[2]].astype(np.int16)
+    if reg.size == 0:
+        return False
+    paper = np.median(np.concatenate([reg[0], reg[-1]]))
+    return float((np.abs(reg - paper) > 80).mean()) > 0.02
 
 
 def _shift(prev: np.ndarray, cur: np.ndarray, box, lh: int) -> tuple[int, int, float]:
@@ -374,11 +412,11 @@ def _shift(prev: np.ndarray, cur: np.ndarray, box, lh: int) -> tuple[int, int, f
 
 # ---------------------------------------------------------------- the pass over the clip
 
-def _translation(a: np.ndarray, b: np.ndarray) -> bool:
+def _translation(a: np.ndarray, b: np.ndarray) -> tuple[bool, float, float]:
     """Is frame b just frame a shifted (a scroll, a drag)? Phase correlation of the thumbnails answers with a
-    sharp peak; a zoom or a window maximise gives a weak, smeared one."""
+    sharp peak; a zoom or a window maximise gives a weak, smeared one. Returns (moving, dx, dy) in thumbnail px."""
     (dx, dy), resp = cv2.phaseCorrelate(a, b)
-    return resp > 0.35 and (abs(dx) >= 0.5 or abs(dy) >= 0.5)
+    return resp > 0.35 and (abs(dx) >= 0.5 or abs(dy) >= 0.5), dx, dy
 
 
 class Locator:
@@ -397,6 +435,7 @@ class Locator:
         self.ring: list[tuple[int, np.ndarray]] = []  # recent grey frames, for backfill
         self.why = Counter()  # what triggered each full-frame OCR
         self.jump_frame = -1  # the frame of the latest layout jump (zoom, maximise): only fresh OCR boxes count
+        self.shift_now = (0, 0)  # how far content moved on the current frame, for the confirm crop
 
     # -- matching
 
@@ -426,16 +465,31 @@ class Locator:
         self.kind[key] = it.get("kind", "other")
         return key
 
-    def _assign(self, hits, n: int, cluster: int, gray) -> None:
+    def _assign(self, hits, n: int, cluster: int, gray, rgb=None) -> None:
         """Pair each located box with the nearest live track of the same item; the rest start new tracks."""
         moved: dict[int, list] = defaultdict(list)  # old cluster -> corrections of the members found again
         located = set()
         for it, b in hits:
             cands = [t for t in self.live if t.item is it and id(t) not in located]
             near = min(cands, key=lambda t: abs(t.box[0] - b[0]) + abs(t.box[1] - b[1]), default=None)
+            if near and near.ocr_ok == n and not _near(near.box, b, 8) and rgb is not None:
+                # OCR read the value under the track's box on this very frame and this hit disagrees with it.
+                # The value cannot be in two places unless it is shown twice, so the hit must read again on its
+                # own pixels before it is believed.
+                lh = max(8, b[3] - b[1])
+                region = _clip([b[0] - lh, b[1] - lh // 2, b[2] + lh, b[3] + lh // 2], self.W, self.H)
+                if not any(span(rgb, ln, it["text"]) for ln in self.ocr.crop(rgb, region)):
+                    self.ocr.n["stale_hits"] += 1
+                    continue
+                near = None  # a genuine second showing of the value: its own track
             if near and abs(near.box[0] - b[0]) + abs(near.box[1] - b[1]) <= max(60, 3 * near.lh):
-                moved[near.cluster].append((b[0] - near.box[0], b[1] - near.box[1]))
+                if near.confirmed >= n - 1 and not near.partial:
+                    # Only a member whose position was known a frame ago says how far the cluster moved. The
+                    # correction of a box that sat unconfirmed at the screen edge for seconds says nothing about
+                    # the others: applying it once dragged a whole statement one line off.
+                    moved[near.cluster].append((b[0] - near.box[0], b[1] - near.box[1]))
                 near.box, near.confirmed, near.cluster, near.partial = b, n, cluster, False
+                near.ocr_ok = n
                 located.add(id(near))
             else:
                 t = Track(self._new_key(it), it, b, cluster, n, n)
@@ -447,7 +501,7 @@ class Locator:
                 dx = int(np.median([d[0] for d in moved[t.cluster]]))
                 dy = int(np.median([d[1] for d in moved[t.cluster]]))
                 t.box = [t.box[0] + dx, t.box[1] + dy, t.box[2] + dx, t.box[3] + dy]
-                t.cluster = cluster
+                t.cluster, t.followed = cluster, n
 
     def _backfill(self, t: Track, gray, n: int) -> None:
         """A value OCR finds now may have been readable a few frames earlier, before this keyframe: cover those
@@ -461,8 +515,10 @@ class Locator:
 
     # -- per frame
 
-    def _follow(self, n, prev, gray, rgb) -> None:
-        """Carry values whose pixels did not change; shift the rest with their cluster and confirm them."""
+    def _follow(self, n, prev, gray, rgb, page_shift: tuple[int, int] | None) -> None:
+        """Carry values whose pixels did not change; shift the rest with their cluster and confirm them.
+        page_shift is how far the whole screen moved this frame (a scroll or drag), the fallback when the shift
+        measured around a cluster's lead cannot be trusted: a box one frame behind a fast scroll is a leak."""
         moving: dict[int, list[Track]] = defaultdict(list)
         for t in self.live:
             vis = _visible(t.box, self.W, self.H)
@@ -475,6 +531,9 @@ class Locator:
         for c, members in moving.items():
             lead = max(members, key=lambda t: _visible(t.box, self.W, self.H))
             dx, dy, resp = _shift(prev, gray, _clip(lead.box, self.W, self.H), lead.lh)
+            if resp < 0.3 and page_shift is not None:
+                dx, dy, resp = page_shift[0], page_shift[1], 0.3
+            self.shift_now = (dx, dy)
             static = {id(t) for t in self.live if t.cluster == c and id(t) not in {id(m) for m in members}
                       and _visible(t.box, self.W, self.H) > 0}
             for t in self.live:
@@ -497,15 +556,16 @@ class Locator:
         """Crop OCR around the predicted box: the value's line plus about a line above and below."""
         t.ocr_at = n
         w = t.box[2] - t.box[0]
-        region = _clip([int(t.box[0] - 0.15 * w - t.lh), t.box[1] - t.lh, int(t.box[2] + 0.15 * w + t.lh),
-                        t.box[3] + t.lh], self.W, self.H)
+        mx, my = (abs(v) for v in self.shift_now)  # a fast scroll can move a line further than a line height
+        region = _clip([int(t.box[0] - 0.15 * w - t.lh - mx), t.box[1] - t.lh - my,
+                        int(t.box[2] + 0.15 * w + t.lh + mx), t.box[3] + t.lh + my], self.W, self.H)
         best = None
         for ln in self.ocr.crop(rgb, region):
             b = span(rgb, ln, t.item["text"])
             if b and (best is None or abs(b[1] - t.box[1]) < abs(best[1] - t.box[1])):
                 best = b
         if best:
-            t.box, t.confirmed, t.partial = best, n, False
+            t.box, t.confirmed, t.partial, t.ocr_ok = best, n, False, n
 
     def _hint(self, n, rgb, gray) -> None:
         """At a Spark sighting, a value with no confirmed track gets a crop OCR around Spark's (rough) box."""
@@ -518,7 +578,27 @@ class Locator:
                            self.W, self.H)
             hits = [(it, b) for ln in self.ocr.crop(rgb, region) if (b := span(rgb, ln, it["text"]))]
             if hits:
-                self._assign(hits, n, n, gray)
+                self._assign(hits, n, n, gray, rgb)
+
+    def _edge_scan(self, n: int, rgb, gray, dx: float, dy: float) -> None:
+        """While the screen scrolls or is dragged, OCR the band at the edge the content enters from, every frame:
+        a value sliding into view is caught on its first frame instead of at the next keyframe."""
+        W, H = self.W, self.H
+        band = int(min(H, abs(dy) + EDGE_BAND))
+        side = int(min(W, abs(dx) + EDGE_BAND))
+        regions = []
+        if dy >= 0.5:
+            regions.append([0, 0, W, band])
+        elif dy <= -0.5:
+            regions.append([0, H - band, W, H])
+        if dx >= 0.5:
+            regions.append([0, 0, side, H])
+        elif dx <= -0.5:
+            regions.append([W - side, 0, W, H])
+        lines = [ln for r in regions for ln in self.ocr.crop(rgb, r)]
+        if lines:
+            self.ocr.n["edge"] += 1
+            self._assign(self._find(rgb, lines, self.items, n), n, n, gray, rgb)
 
     def _record(self, n: int, gray: np.ndarray) -> None:
         conf = defaultdict(lambda: -10 ** 9)
@@ -527,13 +607,16 @@ class Locator:
                 conf[t.cluster] = max(conf[t.cluster], t.confirmed)
         keep = []
         for t in self.live:
-            if n == self.jump_frame and t.confirmed != n:
-                continue  # the layout just changed scale or shape: a box from before it covers nothing now
+            if n == self.jump_frame and t.confirmed != n and not (t.followed == n and _has_ink(gray, t.box)):
+                continue  # the layout just changed scale or shape: a box from before it covers nothing now,
+                # unless the members OCR did find again moved it here and there is text under it (a line half
+                # under the viewer's toolbar on the last frame before the window closes)
             own = n - t.confirmed <= self.grace
             # A member its cluster still vouches for stays covered even when its own crop OCR fails: a line half
-            # hidden under the viewer's toolbar while the page scrolls, or one that is partly off-screen. But only
-            # while there is ink under the box: a stale box predicted onto blank page is a phantom, not a value.
-            vouched = n - conf[t.cluster] <= self.grace and (t.partial or _has_ink(gray, t.box))
+            # hidden under the viewer's toolbar or bottom edge, or one that is partly off-screen. But only while
+            # there is text-grade ink under the box: a box predicted onto blank page or a watermark is a phantom.
+            vouched = n - conf[t.cluster] <= self.grace and (
+                (t.partial and _visible(t.box, self.W, self.H) < 1.0) or _has_ink(gray, t.box))
             if not (own or vouched):
                 continue  # not confirmed for GRACE_S: drop it (a keyframe will find it again if it is there)
             keep.append(t)
@@ -546,24 +629,31 @@ class Locator:
         W, H, fps = self.W, self.H, self.fps
         ys = np.arange(sample.THUMB_H) * H // sample.THUMB_H
         xs = np.arange(sample.THUMB_W) * W // sample.THUMB_W
-        proc = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-i", str(clip), "-f", "rawvideo", "-pix_fmt",
-                                 "rgb24", "-"], stdout=subprocess.PIPE)
+        # Constant frame rate at the clip's own fps: frame n is always time n/fps, in here and in render.py, even if
+        # the decoder drops a damaged frame (it is duplicated, not skipped, so later boxes do not land one frame late).
+        proc = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-i", str(clip), "-fps_mode", "cfr", "-r", f"{fps}",
+                                 "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
         n, size, prev, prev_th, key_th, last_full = 0, W * H * 3, None, None, None, -10 ** 9
         keyframes = []
         while (chunk := proc.stdout.read(size)) and len(chunk) == size:
             rgb = np.frombuffer(chunk, np.uint8).reshape(H, W, 3)
             gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
             th = gray[np.ix_(ys, xs)].astype(np.float32)
+            # A scroll or drag moves every block, but phase correlation of the thumbnails explains it as one shift.
+            moving, mdx, mdy = (False, 0.0, 0.0) if prev_th is None else _translation(prev_th, th)
+            mdx, mdy = mdx * W / sample.THUMB_W, mdy * H / sample.THUMB_H  # thumbnail -> frame pixels
+            self.shift_now = (int(round(mdx)), int(round(mdy))) if moving else (0, 0)
             if prev is not None:
-                self._follow(n, prev, gray, rgb)
+                self._follow(n, prev, gray, rgb, self.shift_now if moving else None)
             full = n == 0
             if not full and sample.changed(th, key_th):
                 d = np.abs(th - prev_th).reshape(sample.THUMB_H // sample.BLOCK, sample.BLOCK,
                                                  sample.THUMB_W // sample.BLOCK, sample.BLOCK).mean(axis=(1, 3))
-                # A jump is a big change that is NOT a plain shift of the screen (a scroll or drag moves every block
-                # too, but phase correlation of the thumbnails explains it): a zoom, a maximise, a new window.
-                jump = float((d > 4).mean()) > JUMP_FRAC and not _translation(prev_th, th)
-                unsure = any(t.confirmed < n and _visible(t.box, W, H) == 1.0 for t in self.live)
+                # A jump is a big change that is NOT a plain shift: a zoom, a maximise, a new window.
+                jump = float((d > 4).mean()) > JUMP_FRAC and not moving
+                if moving:
+                    self._edge_scan(n, rgb, gray, mdx, mdy)
+                unsure = moving or any(t.confirmed < n and _visible(t.box, W, H) == 1.0 for t in self.live)
                 cap = UNSURE_CAP_S if unsure else MOTION_CAP_S
                 full = jump or n - last_full >= cap * fps
                 if jump:
@@ -575,7 +665,7 @@ class Locator:
                 self.why["after jump"] += 1
             if full:
                 hits = self._find(rgb, self.ocr.frame(rgb), self.items, n)
-                self._assign(hits, n, n, gray)
+                self._assign(hits, n, n, gray, rgb)
                 key_th, last_full = th, n
                 keyframes.append(n)
             self._hint(n, rgb, gray)
@@ -605,6 +695,29 @@ class Locator:
         return dict(out)
 
 
+SMOOTH_GAP = 3      # a value missing for at most this many frames between two sightings is still there
+
+
+def _near(a, b, tol: int) -> bool:
+    return all(abs(x - y) <= tol for x, y in zip(a, b))
+
+
+def _smooth(tracks: dict[str, dict[int, list[int]]]) -> dict[str, dict[int, list[int]]]:
+    """A value seen on frame a and again on frame b a few frames later was there in between (a scroll step whose
+    crop OCR failed under a watermark, say): interpolate the box over the gap. Nothing is dropped or moved."""
+    out = {}
+    for key, per in tracks.items():
+        per = dict(sorted(per.items()))
+        frames = list(per)
+        for a, b in zip(frames, frames[1:]):
+            if 1 < b - a <= SMOOTH_GAP + 1 and _near(per[a], per[b], 120):
+                for m in range(a + 1, b):
+                    w = (m - a) / (b - a)
+                    per[m] = [int(round(x + (y - x) * w)) for x, y in zip(per[a], per[b])]
+        out[key] = dict(sorted(per.items()))
+    return out
+
+
 def locate(clip, items: list[dict], info: dict, out_dir: Path) -> dict[str, dict[int, list[int]]]:
     """For every on-screen TEXT item: {source frame: [x1, y1, x2, y2]} of the value alone, in source pixels.
     A value shown in two places at once gets a second key, "<id>#2"."""
@@ -616,7 +729,7 @@ def locate(clip, items: list[dict], info: dict, out_dir: Path) -> dict[str, dict
     ocr = Ocr(Path("cache/ocr"))
     ocr.min_chars = min(len(norm(value_of(it["text"]))) for it in text)
     loc = Locator(text, info, ocr)
-    tracks = loc.run(clip)
+    tracks = _smooth(loc.run(clip))
     per_item = Counter()
     for key, per in tracks.items():
         per_item[key.split("#")[0]] += len(per)
