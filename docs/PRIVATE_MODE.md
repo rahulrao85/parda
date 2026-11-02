@@ -92,7 +92,7 @@ modal app stop parda-glimmer
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PARDA_PRIVATE_BATCH` | 4 | frames per Glimmer call (Spark uses 8); shorter replies parse more reliably |
+| `PARDA_PRIVATE_BATCH` | 8 | frames per Glimmer call; 4 also parses but is slower (138 s vs 107–120 s) |
 | `PARDA_PRIVATE_GPU_USD_S` | 0.000542 | GPU price used for the cost log (Modal L40S) |
 
 Glimmer gets one extra system message, `Reasoning strength: low`. The screen prompt itself (`screen-v4`) is the
@@ -100,27 +100,47 @@ same text Spark gets. Screen-cache keys include the model name, so Spark and Gli
 
 ## Cost log
 
-Each Glimmer call in `cost.json` records `secs` (request wall time) and `gpu_secs`: wall time divided by the
-number of Glimmer calls sharing the GPU when it started. `usd` is `gpu_secs` × `PARDA_PRIVATE_GPU_USD_S`, and the
+Each Glimmer call in `cost.json` records `secs` (request wall time), `start`/`end`, and `gpu_secs`: its share of
+the GPU's busy time. While n calls overlap, each is charged 1/n of that stretch, so the shares add up to the
+time the GPU served the run. `usd` is `gpu_secs` × `PARDA_PRIVATE_GPU_USD_S`, and the
 top-level `gpu_secs` is the run total. This is the GPU time Parda's own requests used. Modal also bills cold
 start and the 5-minute idle tail; those are listed separately below.
 
-## Measured on `samples/fake_pan_12s.mp4` (12 s, 1280x720, fake data)
+## Measured on `samples/fake_pan_12s.mp4` (12 s, 1280x720, fake data), 02-Nov-2026
 
-Muse Spark (`muse-spark-1.3-contributor`, 02-Nov-2026): recall **4/4** (2 screen + 2 speech) with 1 extra flag.
-The screen step took 3 parallel calls; the slowest was 15.6 s. Screen cost $0.0039, run total $0.0047.
-
-Muse Glimmer: **not measured yet.** The deploy is blocked until the Modal workspace has a payment method (see
-the PR).
+Both runs saw the same 24 sampled frames, with no cache hits. Spark is `muse-spark-1.3-contributor`; Glimmer is the
+FP8 build on one Modal L40S, already warm. Both use batches of 8 frames.
 
 | | Muse Spark | Muse Glimmer (private) |
 |---|---|---|
-| Screen recall (2 on-screen secrets) | 2/2 | — |
-| Total recall vs truth | 4/4 | — |
-| Screen step wall time (warm) | 15.6 s | — |
-| Cold start | none | — |
-| Cost of this clip | $0.0039 screen | — |
-| Cost per minute of video | ≈ $0.02 screen | — |
+| On-screen recall (2 planted) | **2/2** | **2/2** |
+| On-screen items flagged | 3 (name, PAN number, AWS key) | the same 3, tight boxes |
+| Total recall vs truth (incl. speech) | 4/4 | 3/4 (see below) |
+| Screen calls | 3 × 8 frames, slowest 15.6 s | 3 × 8 frames, slowest 76.0 s |
+| `find` wall time | ≈ 45 s | 120 s |
+| Cold start | none | 181 s the first time, 85 s after (compile cache in a Volume) |
+| GPU time for the clip | — | 76.1 GPU-seconds |
+| Screen cost for the clip | $0.0039 | $0.041 of GPU time |
+| **Screen cost per minute of video** | **≈ $0.02** | **≈ $0.21** while warm |
+
+The speech miss is not Glimmer's. Speech runs the same code in both modes (Muse Voice Transcribe, then Muse Spark).
+In the private runs, Voice Transcribe split the sentence and dropped "nine eight seven six five" from the transcript,
+so the phone number never reached the phrase-picking step. Each run transcribes again, and the Spark run happened
+to get one clean turn.
+
+`redact --private --verify 1` from that `find` wrote `clean.mp4` with 360 of 360 frames, all covered, and 2 bleeps.
+Glimmer's verify pass re-scanned the output and found nothing still readable: verdict **clean**. The verify pass
+took 36 s and 29.5 GPU-seconds.
+
+A batch of 4 frames also parses (6 calls), but the run took 138 s instead of 107–120 s, so 8 is the default.
+
+What one session costs beyond the per-minute rate:
+
+- A cold start is 85 s of L40S, about $0.05 (181 s, about $0.10, the very first time).
+- The idle tail before scale-to-zero is 300 s, about $0.16. Run `modal app stop parda-glimmer` to skip it.
+
+All of this work used **$0.98 of Modal credit**: the weight download, image builds, three cold starts, five
+private runs and the idle tails. Nothing was billed to the card.
 
 ## Known limits
 
@@ -128,4 +148,9 @@ the PR).
   spoken secrets from the transcript. Private mode keeps frames off the API, not audio. Moving speech to an
   open model (e.g. MMS ASR, which Parda already uses for word timing) is the next step.
 - The FP8 build is Red Hat's quantization of Meta's weights, not Meta's own file.
-- The first request after an idle period waits for a cold start (container + loading 34 GB of weights).
+- The first request after an idle period waits for a cold start: 85 s (container start, 15 s to load 34 GB of
+  weights from the Volume, and vLLM warm-up).
+- Glimmer is about 5x slower than Spark per call (76 s vs 15.6 s for 8 frames) and about 10x dearer per minute
+  while warm. Private mode trades speed and cost for keeping frames on your own GPU.
+- The Modal URL shows as "unauthenticated" in `modal deploy`, meaning Modal's own proxy login is off. vLLM's
+  `--api-key` guards every `/v1` route; requests with no key or a wrong key get 401 (checked 02-Nov-2026).

@@ -50,11 +50,10 @@ PRIVATE_URL = os.getenv("PARDA_PRIVATE_URL", "")      # e.g. https://<workspace>
 PRIVATE_MODEL = os.getenv("PARDA_PRIVATE_MODEL", "muse-glimmer")
 PRIVATE_KEY = os.getenv("PARDA_PRIVATE_KEY", "")      # the bearer key the server was started with (VLLM_API_KEY)
 PRIVATE_GPU_USD_S = float(os.getenv("PARDA_PRIVATE_GPU_USD_S", "0.000542"))  # Modal L40S list price, 02-Nov-2026
-PRIVATE_BATCH = int(os.getenv("PARDA_PRIVATE_BATCH", "4"))  # frames per Glimmer call
+PRIVATE_BATCH = int(os.getenv("PARDA_PRIVATE_BATCH", "8"))  # frames per Glimmer call (4 parses too, but is slower)
 # Glimmer reads its reasoning effort from the system prompt; the screen prompt itself is shared with Spark unchanged.
 PRIVATE_SYSTEM = "Reasoning strength: low"
 _private_client = None
-_inflight, _inflight_lock = 0, threading.Lock()
 
 
 def use_private(on: bool = True) -> None:
@@ -77,32 +76,27 @@ def screen_json(content: list, effort: str = "low") -> dict:
 
 
 def private_json(content: list, attempts: int = 3) -> dict:
-    """spark_json for Muse Glimmer on your own endpoint. Logs GPU seconds: the request's wall time divided by the
-    calls sharing the GPU when it started, priced at PARDA_PRIVATE_GPU_USD_S (idle and cold-start time is billed
-    by Modal too; see docs/PRIVATE_MODE.md)."""
-    global _private_client, _inflight
+    """spark_json for Muse Glimmer on your own endpoint. Each call logs its start and end; write_cost turns those
+    into GPU seconds (see _gpu_share), priced at PARDA_PRIVATE_GPU_USD_S. Modal also bills cold start and the idle
+    tail, which no single call owns; see docs/PRIVATE_MODE.md."""
+    global _private_client
     if not PRIVATE_URL or not PRIVATE_KEY:
         raise RuntimeError("private mode needs PARDA_PRIVATE_URL and PARDA_PRIVATE_KEY (see docs/PRIVATE_MODE.md)")
     if _private_client is None:
         _private_client = OpenAI(api_key=PRIVATE_KEY, base_url=PRIVATE_URL.rstrip("/") + "/v1", timeout=1200,
                                  max_retries=2)
     for attempt in range(attempts):
-        with _inflight_lock:
-            _inflight += 1
-            sharing = _inflight
         t = time.time()
-        try:
-            r = _private_client.chat.completions.create(
-                model=PRIVATE_MODEL, max_tokens=4096,
-                messages=[{"role": "system", "content": PRIVATE_SYSTEM}, {"role": "user", "content": content}])
-        finally:
-            with _inflight_lock:
-                _inflight -= 1
-        secs = time.time() - t
+        r = _private_client.chat.completions.create(
+            model=PRIVATE_MODEL, max_tokens=4096,
+            messages=[{"role": "system", "content": PRIVATE_SYSTEM}, {"role": "user", "content": content}])
+        end = time.time()
         u = r.usage
-        COST_LOG.append({"model": PRIVATE_MODEL, "backend": "private", "secs": round(secs, 1),
-                         "gpu_secs": round(secs / sharing, 1), "in": u.prompt_tokens, "out": u.completion_tokens,
-                         "usd": secs / sharing * PRIVATE_GPU_USD_S})
+        with _log_lock:
+            COST_LOG.append({"model": PRIVATE_MODEL, "backend": "private", "secs": round(end - t, 1),
+                             "start": round(t, 2), "end": round(end, 2), "in": u.prompt_tokens,
+                             "out": u.completion_tokens, "gpu_secs": 0.0, "usd": 0.0})
+            _gpu_share()
         text = r.choices[0].message.content or ""
         m = re.search(r"\{.*\}", text, re.S)
         try:
@@ -110,6 +104,24 @@ def private_json(content: list, attempts: int = 3) -> dict:
         except json.JSONDecodeError:
             continue
     raise ValueError(f"Muse Glimmer returned unparseable JSON {attempts} times")
+
+
+_log_lock = threading.Lock()
+
+
+def _gpu_share() -> None:
+    """Split the GPU's busy time among the private calls that overlapped: during a stretch when n calls were in
+    flight, each is charged 1/n of it. The shares add up to the time the GPU served Parda."""
+    calls = [c for c in COST_LOG if c.get("backend") == "private"]
+    edges = sorted({c["start"] for c in calls} | {c["end"] for c in calls})
+    share = {id(c): 0.0 for c in calls}
+    for a, b in zip(edges, edges[1:]):
+        live = [c for c in calls if c["start"] <= a and c["end"] >= b]
+        for c in live:
+            share[id(c)] += (b - a) / len(live)
+    for c in calls:
+        c["gpu_secs"] = round(share[id(c)], 1)
+        c["usd"] = share[id(c)] * PRIVATE_GPU_USD_S
 
 
 def log_cost(model: str, usd: float, **extra) -> None:
