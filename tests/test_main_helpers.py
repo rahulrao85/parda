@@ -1,6 +1,9 @@
 """parda/__main__.py: Levenshtein distance and the "is this verify finding a value we already cover?" check."""
+import os, subprocess, sys
+
 import pytest
 
+from conftest import ROOT
 from parda.__main__ import _edits, _known
 
 
@@ -35,3 +38,13 @@ def test_known_numbers_are_never_fuzzy():
 def test_known_short_values_are_never_fuzzy():
     assert not _known("abcde12", {"abcde1"})
     assert _known("abcde12", {"abcde12"})
+
+
+@pytest.mark.xfail(reason="parda.api builds its OpenAI client at import, so importing parda without a key (offline "
+                          "redact, --help) raises OpenAIError", strict=True)
+def test_parda_imports_without_a_key(tmp_path):
+    env = {k: v for k, v in os.environ.items() if k not in ("META_API_KEY", "META_API", "OPENAI_API_KEY")}
+    env["PYTHONPATH"] = str(ROOT)
+    r = subprocess.run([sys.executable, "-c", "import parda.__main__"], cwd=tmp_path, env=env,  # no .env up here
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr.splitlines()[-1:]

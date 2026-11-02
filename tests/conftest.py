@@ -1,9 +1,15 @@
 """Shared helpers. The default suite (-m "not api and not slow") must never reach the network or a model."""
-import shutil, socket, subprocess
+import os, shutil, socket, subprocess
 from pathlib import Path
 
 import numpy as np
 import pytest
+
+# parda/api.py builds its OpenAI client at import time, and the client refuses to exist without some key. With no
+# Meta key (CI), give it a placeholder through the SDK's own variable so the modules import. parda.api.KEY stays
+# unset, so `api` tests still skip, and the network is blocked wherever a test could reach it.
+if not (os.getenv("META_API_KEY") or os.getenv("META_API")):
+    os.environ.setdefault("OPENAI_API_KEY", "offline-placeholder-not-a-key")
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = ROOT / "samples"

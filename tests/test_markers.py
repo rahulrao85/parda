@@ -38,3 +38,4 @@ def test_spark_answers_json():
     reply = api.spark_json([{"type": "text", "text": 'Reply with exactly this JSON and nothing else: {"ok": true}'}])
     assert reply.get("ok") is True
     assert api.COST_LOG and api.COST_LOG[-1]["model"] == api.SPARK
+
