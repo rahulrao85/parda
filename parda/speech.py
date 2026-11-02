@@ -46,6 +46,7 @@ def transcribe(clip, duration: float, cache: Path) -> list[dict]:
     hit = cache / "transcript.json"
     if hit.exists():
         return json.loads(hit.read_text(encoding="utf-8"))
+    api.require_key()
     turns = []
     with tempfile.TemporaryDirectory() as tmp:
         for start in np.arange(0, duration, CHUNK_S):

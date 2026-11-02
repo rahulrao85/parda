@@ -44,6 +44,7 @@ def _segment(clip, start: float, end: float, info: dict, out: Path, fps: float) 
 
 
 def _sam(video: Path, prompt: str) -> str:
+    api.require_key()
     data = video.read_bytes()
     if len(data) < 45_000_000:
         part = {"type": "input_video", "video_url": "data:video/mp4;base64," + base64.b64encode(data).decode()}
