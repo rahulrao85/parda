@@ -44,7 +44,7 @@ def _jpeg(frame: Frame) -> bytes:
 
 def _batch(frames: list[Frame], cache: Path, prompt: str = PROMPT) -> dict[float, list]:
     jpegs = [_jpeg(f) for f in frames]
-    key = hashlib.sha1(PROMPT_VERSION.encode() + prompt.encode() + api.SPARK.encode() + b"".join(jpegs)).hexdigest()
+    key = hashlib.sha1(PROMPT_VERSION.encode() + prompt.encode() + api.screen_model().encode() + b"".join(jpegs)).hexdigest()
     hit = cache / f"{key}.json"
     if hit.exists():
         return {float(k): v for k, v in json.loads(hit.read_text()).items()}
@@ -53,7 +53,7 @@ def _batch(frames: list[Frame], cache: Path, prompt: str = PROMPT) -> dict[float
         content += [{"type": "text", "text": f"Frame {n} (t={f.t:.1f}s):"},
                     {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jp).decode()}}]
     try:
-        reply = api.spark_json(content)
+        reply = api.screen_json(content)
     except ValueError:
         if len(frames) == 1:
             raise
@@ -108,6 +108,8 @@ def find(frames: list[Frame], info: dict, cache: Path, batch: int = 8, workers: 
          verify: bool = False) -> list[dict]:
     """Flags grouped into items: one item per distinct secret, with every frame it was seen on."""
     cache.mkdir(parents=True, exist_ok=True)
+    if api.private():  # Glimmer: smaller batches, so each reply stays short and parses
+        batch = min(batch, api.PRIVATE_BATCH)
     groups = [frames[i:i + batch] for i in range(0, len(frames), batch)]
     per_frame: dict[float, list] = {}
     with ThreadPoolExecutor(workers) as pool:
