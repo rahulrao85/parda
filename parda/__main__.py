@@ -65,7 +65,7 @@ def find(clip: Path, out: Path) -> dict:
     result = {"clip": clip.name, "video": info, "items": on_screen + spoken}
     (out / "flags.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     usd = api.write_cost(out)
-    print(f"done in {time.time() - t:.0f}s, ${usd:.4f}, model {api.SPARK} -> {out / 'flags.json'}")
+    print(f"done in {time.time() - t:.0f}s, ${usd:.4f}, model {api.screen_model()} -> {out / 'flags.json'}")
     return result
 
 
@@ -151,8 +151,13 @@ def main() -> None:
     r.add_argument("-o", "--out", type=Path)
     r.add_argument("--verify", type=int, default=3, help="max verify-and-fix passes (0 = skip)")
     r.add_argument("--drop", nargs="*", default=[], help="item ids to leave out, to test that verify catches them")
+    for sp in (f, r):
+        sp.add_argument("--private", action="store_true", help="find on-screen secrets with Muse Glimmer on your own "
+                        "GPU (PARDA_PRIVATE_URL) instead of Muse Spark; same as PARDA_BACKEND=private")
     a = p.parse_args()
     out = a.out or Path("out") / a.clip.stem
+    if a.private:
+        api.use_private()
     if a.cmd == "find":
         find(a.clip, out)
     else:
