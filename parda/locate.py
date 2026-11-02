@@ -244,7 +244,7 @@ def _match(line: dict, value: str, kind: str | None = None) -> tuple[int, int] |
             return i, i + len(v)
         i = t.find(v, i + 1)
     L = len(v)
-    if L >= 5 and kind not in PARTIAL_NEVER:
+    if L >= 5 and kind and kind not in PARTIAL_NEVER:  # only with a known kind: without one, "500000" in "-25,000.00" could be an amount
         # Spark saw the value while it was being typed ("anita.verm" of "anita.verma@example.com") or verify read a
         # piece of it ("erma@exa"): a secret is a token, so the whole token the piece sits in is the value, as long
         # as the token is not far longer than the piece (an amount inside a longer amount is a different value).
