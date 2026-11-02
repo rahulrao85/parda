@@ -209,6 +209,8 @@ def _iou(a, b) -> float:
 # ---------------------------------------------------------------- value span inside a line
 
 CURSOR = set("|lI1!")  # what OCR makes of a text cursor at the end of a form field
+TOKEN_GLUE = "@._-+/#"  # characters that keep a token together (e-mails, keys, dotted names)
+PARTIAL_NEVER = {"financial_amount", "amount", "date_of_birth", "date"}  # a piece of these is a different value
 
 
 def _match(line: dict, value: str, kind: str | None = None) -> tuple[int, int] | None:
@@ -223,10 +225,18 @@ def _match(line: dict, value: str, kind: str | None = None) -> tuple[int, int] |
         # A 1-2 character value ("25" in a date-of-birth day box) only when it is the whole line.
         return (0, len(t)) if len(v) >= 2 and t == v else None
 
+    one_class = v.isdigit() or v.isalpha()
+
+    def edge(outside: str, inside: str) -> bool:
+        # A boundary is a non-alphanumeric character or, for an all-digit or all-letter value, a change of class:
+        # OCR drops the space in "number 000123456789", and the letter-to-digit step is still the value's edge.
+        # (Not for mixed values: "K7" followed by "M" inside a key is the middle of the key.)
+        return not outside.isalnum() or (one_class and outside.isalpha() != inside.isalpha())
+
     def bounded(i: int, j: int) -> bool:  # letters and digits on either side would make it part of a longer token
         a, b = kept[i] - 1, kept[j - 1] + 1
-        after_ok = b >= len(raw) or not raw[b].isalnum() or (b == len(raw) - 1 and raw[b] in CURSOR)
-        return (a < 0 or not raw[a].isalnum()) and after_ok
+        after_ok = b >= len(raw) or edge(raw[b], raw[kept[j - 1]]) or (b == len(raw) - 1 and raw[b] in CURSOR)
+        return (a < 0 or edge(raw[a], raw[kept[i]])) and after_ok
 
     i = t.find(v)
     while i >= 0:
@@ -234,6 +244,37 @@ def _match(line: dict, value: str, kind: str | None = None) -> tuple[int, int] |
             return i, i + len(v)
         i = t.find(v, i + 1)
     L = len(v)
+    if L >= 5 and kind not in PARTIAL_NEVER:
+        # Spark saw the value while it was being typed ("anita.verm" of "anita.verma@example.com") or verify read a
+        # piece of it ("erma@exa"): a secret is a token, so the whole token the piece sits in is the value, as long
+        # as the token is not far longer than the piece (an amount inside a longer amount is a different value).
+        def glue(lo: int, hi: int) -> bool:  # raw[lo:hi] is all token characters (no space, comma, bracket ...)
+            return all(c.isalnum() or c in TOKEN_GLUE for c in raw[lo:hi])
+
+        i = t.find(v)
+        while i >= 0:
+            a, b = i, i + L
+            while a > 0 and glue(kept[a - 1], kept[a]):
+                a -= 1
+            while b < len(t) and glue(kept[b - 1] + 1, kept[b] + 1):
+                b += 1
+            if b - a <= 3 * L and bounded(a, b):
+                return a, b
+            i = t.find(v, i + 1)
+    if L >= 8 and len(t) >= L - 1:
+        # Spark drops or doubles a repeated character ("SMPL000123" for "SMPL0000123"): a token-bounded window one
+        # character shorter or longer that agrees with the value almost everywhere is the value.
+        from difflib import SequenceMatcher
+        best, bij = 0.0, None
+        for wl in (L - 1, L + 1):
+            for s in range(len(t) - wl + 1):
+                if not bounded(s, s + wl):
+                    continue
+                r = SequenceMatcher(None, t[s:s + wl], v).ratio()
+                if r > best:
+                    best, bij = r, (s, s + wl)
+        if best >= 0.88:
+            return bij
     if kind == "password" and len(line["text"]) >= 6 and " " not in value.strip() and L >= 6:
         # (a Spark description such as "masked password dots" is not a string to look for)
         # Spark and OCR each read a random string a little differently ("QAVbxx*P6Kk" vs "vQAVbxx^P6k6"): a
@@ -260,9 +301,10 @@ def _match(line: dict, value: str, kind: str | None = None) -> tuple[int, int] |
     for n in range(min(L - 1, len(t)), 3, -1):
         if t.endswith(v[:n]) and bounded(len(t) - n, len(t)):
             return len(t) - n, len(t)
-    if L < 10 or len(t) < L or not any(v[k:k + 6] in t for k in range(0, L - 5, 3)):
-        return None  # fuzzy only for long values, and only on a line that shares a 6-character run with it
-    # OCR misreads are mostly substitutions (0/O, l/I): the best same-length window must agree on 85% of characters
+    run = 6 if L >= 10 else 5
+    if L < (10 if kind in PARTIAL_NEVER else 8) or len(t) < L or not any(v[k:k + run] in t for k in range(0, L - run + 1)):
+        return None  # fuzzy only for long values (8+, amounts and dates 10+), on a line that shares a run of them
+    # OCR misreads are mostly substitutions (0/O, l/I: "Pooja lyer"): the best same-length window must agree on 85%
     best, bi = 0, -1
     for s in range(len(t) - L + 1):
         eq = sum(a == b for a, b in zip(t[s:s + L], v))

@@ -113,8 +113,13 @@ def redact(clip: Path, out: Path, verify_passes: int = 3, drop: tuple = ()) -> d
         # whole set is located again below. Anything new becomes an item.
         known = {screen._norm(it["text"]) for it in items if it["where"] == "screen"}
         new = [lk for lk in leaks if lk["where"] != "screen" or not _known(screen._norm(lk["text"]), known)]
-        for k, lk in enumerate(new, start=1):  # fix: track the leak on the source video, render again
+        used, k = {it["id"] for it in items}, 0
+        for lk in new:  # fix: track the leak on the source video, render again
+            k += 1
+            while f"v{n + 1}.{k}" in used:  # ids carried over from an earlier run's audit.json keep theirs
+                k += 1
             lk["id"], lk["found_by"] = f"v{n + 1}.{k}", f"verify pass {n + 1}"
+            used.add(lk["id"])
         items += new
         leaks = new
         # Text leaks are located together with everything already known, so they share its clusters (a value
