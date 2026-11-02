@@ -116,7 +116,9 @@ inside that window.
 - `scripts/score_find.py`: recall against a clip's ground truth. `scripts/style_preview.py`: stills of the covers.
 
 **Baseline, not included:** before the hackathon I used a regex-over-EasyOCR sweep for my own videos. That code is
-not in this repo; it is only the baseline Parda is compared against.
+not in this repo; it is only the baseline Parda is compared against. `BENCHMARK.md` measures Parda against a
+re-implementation of that sweep (`scripts/baseline_regex.py`) on ten generated clips (`scripts/make_bench_set.py`,
+`scripts/bench.py`): what a stranger can still read after each, frame by frame.
 
 ## Rules Parda follows
 
