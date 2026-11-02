@@ -36,9 +36,11 @@ A photo on an ID becomes a flat patch.
 | **SAM 3.1** (Meta Model API) | Tracks non-text items (the photo on an ID card) through the clip from a box prompt |
 | **Muse Voice Transcribe** (Meta Model API) | Transcript of the audio, Hindi and Hinglish included |
 | **MMS forced alignment** (Meta open weights, via torchaudio) | Word timings inside a transcript turn, so the bleep covers only the digits |
+| **Muse Glimmer** (Meta open weights, 30B, on your own GPU) | *Private mode:* `--private` runs the on-screen "what is private" step on Glimmer served from your own Modal GPU, so frames never leave your control. `modal deploy deploy/modal_glimmer.py`, then `--private`; see `docs/PRIVATE_MODE.md` |
 
 Real footage always goes to the standard Muse Spark model. The cheaper Contributor tier, where Meta may train on
-inputs, is used only for the fake test clips (`PARDA_TEST_DATA=1`).
+inputs, is used only for the fake test clips (`PARDA_TEST_DATA=1`). Private mode keeps the frames off the API;
+speech still goes to Voice Transcribe and Spark.
 
 ## How it works
 
