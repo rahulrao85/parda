@@ -28,7 +28,8 @@ PORT = 8000
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .uv_pip_install("vllm==0.32.0", "huggingface_hub[hf_xet]>=1.0")
-    .env({"HF_XET_HIGH_PERFORMANCE": "1", "VLLM_USE_V1": "1"})
+    # FlashInfer's sampler JIT-compiles with nvcc, which the slim image lacks; vLLM's own sampler needs no compiler
+    .env({"HF_XET_HIGH_PERFORMANCE": "1", "VLLM_USE_V1": "1", "VLLM_USE_FLASHINFER_SAMPLER": "0"})
 )
 weights = modal.Volume.from_name("parda-glimmer-weights", create_if_missing=True)
 compile_cache = modal.Volume.from_name("parda-glimmer-vllm-cache", create_if_missing=True)  # shorter cold starts
