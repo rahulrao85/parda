@@ -40,11 +40,16 @@ def test_known_short_values_are_never_fuzzy():
     assert _known("abcde12", {"abcde12"})
 
 
-@pytest.mark.xfail(reason="parda.api builds its OpenAI client at import, so importing parda without a key (offline "
-                          "redact, --help) raises OpenAIError", strict=True)
 def test_parda_imports_without_a_key(tmp_path):
     env = {k: v for k, v in os.environ.items() if k not in ("META_API_KEY", "META_API", "OPENAI_API_KEY")}
     env["PYTHONPATH"] = str(ROOT)
     r = subprocess.run([sys.executable, "-c", "import parda.__main__"], cwd=tmp_path, env=env,  # no .env up here
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr.splitlines()[-1:]
+
+
+def test_api_call_without_a_key_says_what_is_missing(monkeypatch):
+    from parda import api
+    monkeypatch.setattr(api, "KEY", None)
+    with pytest.raises(RuntimeError, match="META_API_KEY"):
+        api.spark_json([{"type": "text", "text": "never sent"}])

@@ -23,7 +23,5 @@ def test_real_secrets_do_not_match(secret):
     assert not COVER_WORDS.search(secret)
 
 
-@pytest.mark.xfail(reason="COVER_WORDS has no word boundary on 'hidden', so a real password containing it is "
-                          "dropped as a cover", strict=True)
 def test_password_containing_a_cover_word_is_still_a_leak():
     assert not COVER_WORDS.search("hiddenvalley42")

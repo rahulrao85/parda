@@ -8,7 +8,9 @@ from openai import OpenAI
 load_dotenv(find_dotenv(usecwd=True))
 KEY = os.getenv("META_API_KEY") or os.getenv("META_API")
 BASE = "https://api.meta.ai/v1"
-client = OpenAI(api_key=KEY, base_url=BASE, timeout=300, max_retries=3)
+# The client exists without a key, so parda imports offline (--help, redact from a saved flags.json); a call that
+# needs the API checks for the key first (require_key) and says what is missing.
+client = OpenAI(api_key=KEY or "META_API_KEY-not-set", base_url=BASE, timeout=300, max_retries=3)
 
 # Contributor models are 12x cheaper but Meta may train on what they see, so they are only for fake test clips.
 # Real footage always goes to the standard model. Set PARDA_TEST_DATA=1 to opt a run into the cheap tier.
@@ -19,9 +21,15 @@ PRICE = {  # USD per 1M tokens (input, output), from dev.meta.ai pricing, 28-Oct
 COST_LOG: list[dict] = []
 
 
+def require_key() -> None:
+    if not KEY:
+        raise RuntimeError("this step calls the Meta Model API: set META_API_KEY in the environment or .env")
+
+
 def spark_json(content: list, effort: str = "low", attempts: int = 3) -> dict:
     """One Muse Spark call that must answer with a JSON object. Retries a reply that does not parse; raises
     ValueError if none does, so a caller never mistakes a broken reply for "nothing private here"."""
+    require_key()
     for attempt in range(attempts):
         t = time.time()
         r = client.chat.completions.create(model=SPARK, reasoning_effort=effort,
