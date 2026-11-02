@@ -35,16 +35,16 @@ def test_match_uses_ocr_chars_when_present():
     assert _match(ln, "ABCDE1234F") == (2, 12)
 
 
-@pytest.mark.xfail(reason="a long value that OCR glued to its label (PANABCDE1234F) fails the token-boundary check "
-                          "and stays uncovered", strict=True)
 def test_match_value_glued_to_label_by_ocr():
-    assert _match(line("PANABCDE1234F"), "ABCDE1234F") is not None
+    # OCR glued the label to the value (PANABCDE1234F): with Spark's kind known, the whole token is the value
+    assert _match(line("PANABCDE1234F"), "ABCDE1234F", kind="id_number") == (0, 13)
+    assert _match(line("PANABCDE1234F"), "ABCDE1234F") is None  # without a kind, a piece could be a different value
 
 
 def test_match_respects_token_boundaries():
     assert _match(line("Balance -25,000.00"), "-5,000.00") is None
     assert _match(line("Debit -5,000.00 today"), "-5,000.00") is not None
-    assert _match(line("x12345678y"), "12345678") is None
+    assert _match(line("x12345678y"), "12345678") == (1, 9)  # a letter glued to a number is a label, not more number
     i, j = _match(line("ABCDE1234F and BCDE1"), "BCDE1")  # skips the embedded hit, finds the token
     assert norm("ABCDE1234F and BCDE1")[i:j] == "bcde1" and i > 5
 
