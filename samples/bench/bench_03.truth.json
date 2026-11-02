@@ -1,0 +1,35 @@
+{
+  "clip": "bench_03.mp4",
+  "scene": "statement_scroll",
+  "speech": null,
+  "secrets": [
+    {
+      "kind": "name",
+      "text": "PRIYA SHARMA",
+      "where": "screen",
+      "start_s": 0,
+      "end_s": 6
+    },
+    {
+      "kind": "bank_detail",
+      "text": "000123456789",
+      "where": "screen",
+      "start_s": 0,
+      "end_s": 6
+    },
+    {
+      "kind": "bank_detail",
+      "text": "SMPL0000123",
+      "where": "screen",
+      "start_s": 0,
+      "end_s": 6
+    },
+    {
+      "kind": "email",
+      "text": "priya.sharma@example.com",
+      "where": "screen",
+      "start_s": 0,
+      "end_s": 6
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "clip": "bench_02.mp4",
+  "scene": "env_typed",
+  "speech": null,
+  "secrets": [
+    {
+      "kind": "password",
+      "text": "hunter2-not-real",
+      "where": "screen",
+      "start_s": 3.45,
+      "end_s": 12
+    },
+    {
+      "kind": "api_key",
+      "text": "AKIAIOSFODNN7EXAMPLE",
+      "where": "screen",
+      "start_s": 4.85,
+      "end_s": 12
+    },
+    {
+      "kind": "api_key",
+      "text": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "where": "screen",
+      "start_s": 6.65,
+      "end_s": 12
+    },
+    {
+      "kind": "api_key",
+      "text": "sk-test-FAKE0000parda0000demo0000key",
+      "where": "screen",
+      "start_s": 8.18,
+      "end_s": 12
+    },
+    {
+      "kind": "email",
+      "text": "priya.sharma@example.com",
+      "where": "screen",
+      "start_s": 9.85,
+      "end_s": 12
+    }
+  ]
+}

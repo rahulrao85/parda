@@ -1,0 +1,49 @@
+{
+  "clip": "bench_04.mp4",
+  "scene": "signup_form",
+  "speech": "My email is anita dot verma at example dot com, send it there.",
+  "secrets": [
+    {
+      "kind": "name",
+      "text": "ANITA VERMA",
+      "where": "screen",
+      "start_s": 1.0,
+      "end_s": 12
+    },
+    {
+      "kind": "email",
+      "text": "anita.verma@example.com",
+      "where": "screen",
+      "start_s": 3.0,
+      "end_s": 12
+    },
+    {
+      "kind": "phone",
+      "text": "9876543210",
+      "where": "screen",
+      "start_s": 5.5,
+      "end_s": 12
+    },
+    {
+      "kind": "password",
+      "text": "Tq7#demo2026",
+      "where": "screen",
+      "start_s": 7.5,
+      "end_s": 12
+    },
+    {
+      "kind": "dob",
+      "text": "14/03/1992",
+      "where": "screen",
+      "start_s": 9.5,
+      "end_s": 12
+    },
+    {
+      "kind": "email",
+      "text": "anita.verma@example.com",
+      "where": "speech",
+      "start_s": 0.0,
+      "end_s": 12
+    }
+  ]
+}

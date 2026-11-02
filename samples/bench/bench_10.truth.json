@@ -1,0 +1,35 @@
+{
+  "clip": "bench_10.mp4",
+  "scene": "scroll_out_in",
+  "speech": null,
+  "secrets": [
+    {
+      "kind": "bank_detail",
+      "text": "000123456789",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    },
+    {
+      "kind": "bank_detail",
+      "text": "SMPL0000123",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    },
+    {
+      "kind": "name",
+      "text": "RAVI MENON",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    },
+    {
+      "kind": "email",
+      "text": "ravi.menon@example.com",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    }
+  ]
+}

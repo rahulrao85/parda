@@ -1,0 +1,35 @@
+{
+  "clip": "bench_07.mp4",
+  "scene": "maximise_jump",
+  "speech": null,
+  "secrets": [
+    {
+      "kind": "name",
+      "text": "RAJESH KUMAR",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    },
+    {
+      "kind": "id_number",
+      "text": "FGHIJ5678K",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    },
+    {
+      "kind": "bank_detail",
+      "text": "111122223333",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    },
+    {
+      "kind": "phone",
+      "text": "9123456780",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    }
+  ]
+}

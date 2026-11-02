@@ -1,0 +1,35 @@
+{
+  "clip": "bench_09.mp4",
+  "scene": "id_drag",
+  "speech": null,
+  "secrets": [
+    {
+      "kind": "name",
+      "text": "ANITA VERMA",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    },
+    {
+      "kind": "dob",
+      "text": "14/03/1992",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    },
+    {
+      "kind": "id_number",
+      "text": "DL-0420110012345",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    },
+    {
+      "kind": "phone",
+      "text": "9876543210",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    }
+  ]
+}

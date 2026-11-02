@@ -1,0 +1,28 @@
+{
+  "clip": "bench_08.mp4",
+  "scene": "code_editor",
+  "speech": null,
+  "secrets": [
+    {
+      "kind": "password",
+      "text": "S3cretPwd-fake",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    },
+    {
+      "kind": "api_key",
+      "text": "sk-test-FAKE0000parda0000demo0000key",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    },
+    {
+      "kind": "phone",
+      "text": "+91 98765 43210",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    }
+  ]
+}

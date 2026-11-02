@@ -1,0 +1,35 @@
+{
+  "clip": "bench_05.mp4",
+  "scene": "chat_otp",
+  "speech": "The OTP is four eight two nine one six.",
+  "secrets": [
+    {
+      "kind": "otp",
+      "text": "482916",
+      "where": "screen",
+      "start_s": 2.0,
+      "end_s": 12
+    },
+    {
+      "kind": "phone",
+      "text": "9876543210",
+      "where": "screen",
+      "start_s": 3.5,
+      "end_s": 12
+    },
+    {
+      "kind": "bank_detail",
+      "text": "anita@examplebank",
+      "where": "screen",
+      "start_s": 5.0,
+      "end_s": 12
+    },
+    {
+      "kind": "otp",
+      "text": "482916",
+      "where": "speech",
+      "start_s": 0.0,
+      "end_s": 12
+    }
+  ]
+}

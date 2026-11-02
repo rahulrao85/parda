@@ -1,0 +1,49 @@
+{
+  "clip": "bench_06.mp4",
+  "scene": "sheet_amounts",
+  "speech": null,
+  "secrets": [
+    {
+      "kind": "id_number",
+      "text": "0000 1111 2222",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    },
+    {
+      "kind": "id_number",
+      "text": "3333 4444 5555",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    },
+    {
+      "kind": "id_number",
+      "text": "6666 7777 8888",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    },
+    {
+      "kind": "id_number",
+      "text": "ABCDE1234F",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    },
+    {
+      "kind": "id_number",
+      "text": "FGHIJ5678K",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    },
+    {
+      "kind": "id_number",
+      "text": "KLMNO9012P",
+      "where": "screen",
+      "start_s": 0.0,
+      "end_s": 12
+    }
+  ]
+}
